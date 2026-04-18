@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +21,7 @@ from slop_code.common.llms import ModelDefinition
 from slop_code.execution import DockerConfig
 from slop_code.execution import DockerEnvironmentSpec
 from slop_code.execution.runtime import RuntimeEvent
+from slop_code.execution.runtime import RuntimeResult
 
 
 class FakeRuntime:
@@ -33,8 +36,8 @@ class FakeRuntime:
         self,
         command: str,
         env: dict,
-        stdin: str | list[str] | None,
         timeout: float | None,
+        stdin: str | list[str] | None = None,
     ) -> Iterable[RuntimeEvent]:
         self.last_stream_args = ((command, env, stdin, timeout), {})
         yield from self.events
@@ -72,8 +75,13 @@ class FakeSession:
     last_spawn_mounts: dict[str, dict[str, str] | str] | None = None
 
     def spawn(self, **_: object) -> FakeRuntime:
-        self.last_spawn_env_vars = dict(_.get("env_vars") or {})
-        self.last_spawn_mounts = dict(_.get("mounts") or {})
+        env_vars = cast("dict[str, str] | None", _.get("env_vars"))
+        mounts = cast(
+            "dict[str, dict[str, str] | str] | None",
+            _.get("mounts"),
+        )
+        self.last_spawn_env_vars = dict(env_vars or {})
+        self.last_spawn_mounts = dict(mounts or {})
         return self.runtime
 
 
@@ -404,6 +412,203 @@ class TestCodexAgent:
         assert prompt_file.exists()
         assert prompt_file.read_text() == "test prompt"
 
+    def test_parse_line_reads_codex_token_count_reported_cost(
+        self, mock_pricing
+    ):
+        """Codex token_count events should use CLI-reported total cost."""
+        payload = {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_cost": 1.25,
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "cached_input_tokens": 25,
+                        "reasoning_output_tokens": 10,
+                    },
+                },
+            },
+        }
+
+        cost, tokens, parsed = CodexAgent.parse_line(
+            json.dumps(payload), pricing=mock_pricing
+        )
+
+        assert cost == pytest.approx(1.25)
+        assert tokens is not None
+        assert tokens.input == 100
+        assert tokens.output == 50
+        assert tokens.cache_read == 25
+        assert tokens.reasoning == 10
+        assert parsed == payload
+
+    def test_run_uses_codex_reported_total_cost_when_available(
+        self, tmp_path, mock_cost_limits, mock_pricing
+    ):
+        """Reported token_count totals take precedence over local repricing."""
+        turn_completed = {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cached_input_tokens": 1_000_000,
+            },
+        }
+        token_count = {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_cost": 1.25,
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "cached_input_tokens": 25,
+                        "reasoning_output_tokens": 10,
+                    },
+                },
+            },
+        }
+        stdout = f"{json.dumps(turn_completed)}\n{json.dumps(token_count)}\n"
+        runtime = FakeRuntime()
+        runtime.events = [
+            RuntimeEvent(kind="stdout", text=stdout),
+            RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=0,
+                    stdout=stdout,
+                    stderr="",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            ),
+        ]
+        spec = DockerEnvironmentSpec(
+            name="test",
+            docker=DockerConfig(image="test-image"),
+        )
+        session = FakeSession(
+            runtime=runtime,
+            working_dir=tmp_path,
+            spec=spec,
+        )
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+        )
+
+        agent.setup(session)
+        agent.run("do something")
+
+        assert agent.usage.cost == pytest.approx(1.25)
+        assert agent.usage.net_tokens.input == 100
+        assert agent.usage.net_tokens.output == 50
+        assert agent.usage.net_tokens.cache_read == 25
+        assert agent.usage.net_tokens.reasoning == 10
+
+    def test_run_uses_codex_trace_token_count_when_stdout_lacks_reasoning(
+        self, tmp_path, mock_cost_limits, mock_pricing
+    ):
+        """Trace token_count totals fill reasoning missing from stdout."""
+        stdout_payload = {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cached_input_tokens": 1_000_000,
+            },
+        }
+        stdout = f"{json.dumps(stdout_payload)}\n"
+        runtime = FakeRuntime()
+        runtime.events = [
+            RuntimeEvent(kind="stdout", text=stdout),
+            RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=0,
+                    stdout=stdout,
+                    stderr="",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            ),
+        ]
+        spec = DockerEnvironmentSpec(
+            name="test",
+            docker=DockerConfig(image="test-image"),
+        )
+        session = FakeSession(
+            runtime=runtime,
+            working_dir=tmp_path,
+            spec=spec,
+        )
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+        )
+
+        agent.setup(session)
+        assert agent._trace_dir is not None
+        trace_file = agent._trace_dir / "rollout.jsonl"
+        trace_file.write_text(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {
+                                "input_tokens": 100,
+                                "output_tokens": 50,
+                                "cached_input_tokens": 25,
+                                "reasoning_output_tokens": 10,
+                            },
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        agent.run("do something")
+
+        assert agent.usage.cost == pytest.approx(
+            mock_pricing.get_cost(agent.usage.net_tokens)
+        )
+        assert agent.usage.net_tokens.input == 100
+        assert agent.usage.net_tokens.output == 50
+        assert agent.usage.net_tokens.cache_read == 25
+        assert agent.usage.net_tokens.reasoning == 10
+
     def test_save_artifacts_copies_codex_traces(
         self, tmp_path, mock_cost_limits, mock_pricing
     ):
@@ -529,6 +734,49 @@ class TestCodexAgent:
             event == "agent.codex.traces.saved" and kwargs.get("saved") == 1
             for event, kwargs in logger.debug_calls
         )
+
+    def test_save_artifacts_only_copies_new_codex_trace_files_between_checkpoints(
+        self, tmp_path, mock_cost_limits, mock_pricing
+    ):
+        """Later checkpoints should only save newly created Codex trace files."""
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+        )
+
+        trace_dir = tmp_path / "codex_traces"
+        first_trace = trace_dir / "trace1.jsonl"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        first_trace.write_text('{"type":"turn.started"}\n')
+        agent._trace_dir = trace_dir
+
+        first_output = tmp_path / "checkpoint_1"
+        agent._save_codex_traces(first_output)
+        assert (first_output / "trace1.jsonl").exists()
+
+        agent.reset()
+
+        second_trace = trace_dir / "trace2.jsonl"
+        second_trace.write_text('{"type":"turn.completed"}\n')
+
+        second_output = tmp_path / "checkpoint_2"
+        agent._save_codex_traces(second_output)
+
+        assert not (second_output / "trace1.jsonl").exists()
+        saved_new_trace = second_output / "trace2.jsonl"
+        assert saved_new_trace.exists()
+        assert saved_new_trace.read_text() == second_trace.read_text()
 
     def test_build_command_with_thinking_disabled(
         self, mock_cost_limits, mock_pricing

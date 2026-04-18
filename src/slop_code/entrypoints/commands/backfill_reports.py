@@ -690,6 +690,14 @@ def backfill_reports(
             help="Type of path: 'run' for single run, 'collection' for multiple runs",
         ),
     ] = common.PathType.RUN,
+    recalculate_costs: bool = typer.Option(  # noqa: FBT001, FBT002
+        True,  # noqa: FBT003
+        "--recalculate-costs/--no-recalculate-costs",
+        help=(
+            "Deprecated no-op. Backfill preserves costs reported in "
+            "inference_result.json."
+        ),
+    ),
 ) -> None:
     """Generate checkpoint reports for all problems in a results directory.
 
@@ -705,6 +713,8 @@ def backfill_reports(
         log_dir=None,
         verbosity=ctx.obj.verbosity,
     )
+    if logger is None:
+        raise RuntimeError("backfill-reports requires standard logging")
     logger.info("Backfilling high-level reports", results_dir=results_dir)
 
     # Build AST-grep rules lookup for backfilling ast_grep.jsonl
@@ -754,6 +764,15 @@ def backfill_reports(
                     _process_single_run_backfill(ctx, single_run_dir, logger)
                 )
 
+                with (single_run_dir / CONFIG_FILENAME).open("r") as f:
+                    config = yaml.safe_load(f)
+
+                if recalculate_costs:
+                    logger.info(
+                        "Preserved checkpoint costs from inference results",
+                        run_dir=str(single_run_dir),
+                    )
+
                 # Save to THIS run's directory
                 report_file = single_run_dir / CHECKPOINT_RESULTS_FILENAME
                 update_results_jsonl(report_file, all_reports)
@@ -793,8 +812,6 @@ def backfill_reports(
 
                 # Display and save summary for this specific run
                 console = Console()
-                with (single_run_dir / CONFIG_FILENAME).open("r") as f:
-                    config = yaml.safe_load(f)
                 display_and_save_summary(
                     report_file, single_run_dir, config, console
                 )
@@ -863,6 +880,15 @@ def backfill_reports(
         ctx, results_dir, logger
     )
 
+    with (results_dir / CONFIG_FILENAME).open("r") as f:
+        config = yaml.safe_load(f)
+
+    if recalculate_costs:
+        logger.info(
+            "Preserved checkpoint costs from inference results",
+            run_dir=str(results_dir),
+        )
+
     report_file = results_dir / CHECKPOINT_RESULTS_FILENAME
     update_results_jsonl(report_file, all_reports)
 
@@ -898,6 +924,4 @@ def backfill_reports(
 
     # Display and save summary statistics
     console = Console()
-    with (results_dir / CONFIG_FILENAME).open("r") as f:
-        config = yaml.safe_load(f)
     display_and_save_summary(report_file, results_dir, config, console)

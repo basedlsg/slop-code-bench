@@ -75,6 +75,46 @@ class TestGetEvaluationMetrics:
         result = get_evaluation_metrics(tmp_path)
         assert result == {}
 
+    def test_handles_missing_core_group(self, tmp_path: Path):
+        eval_file = tmp_path / "evaluation.json"
+        eval_file.write_text(
+            json.dumps(
+                {
+                    "pass_counts": {"Regression": 3},
+                    "total_counts": {"Regression": 4},
+                    "pytest_collected": 200,
+                }
+            )
+        )
+
+        result = get_evaluation_metrics(tmp_path)
+
+        assert result["total_tests"] == 4
+        assert result["passed_tests"] == 3
+        assert result["core_total"] == 0
+        assert result["core_passed"] == 0
+        assert result["core_pass_rate"] == 0.0
+
+    def test_backfills_total_tests_from_pytest_collected(self, tmp_path: Path):
+        eval_file = tmp_path / "evaluation.json"
+        eval_file.write_text(
+            json.dumps(
+                {
+                    "pass_counts": {},
+                    "total_counts": {},
+                    "pytest_collected": 45,
+                }
+            )
+        )
+
+        result = get_evaluation_metrics(tmp_path)
+
+        assert result["total_tests"] == 45
+        assert result["passed_tests"] == 0
+        assert result["strict_pass_rate"] == 0.0
+        assert result["isolated_pass_rate"] == 0.0
+        assert result["core_total"] == 0
+
 
 def _create_quality_test_files(tmp_path: Path, files_data: dict) -> Path:
     """Helper to create quality_analysis directory with flat files.

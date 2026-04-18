@@ -11,11 +11,15 @@ from slop_code.agent_runner.agents.claude_code import ClaudeCodeAgent
 from slop_code.agent_runner.agents.claude_code import ClaudeCodeConfig
 from slop_code.agent_runner.agents.codex import CodexAgent
 from slop_code.agent_runner.agents.codex import CodexConfig
+from slop_code.agent_runner.agents.cursor_cli import CursorCliAgent
+from slop_code.agent_runner.agents.cursor_cli import CursorCliConfig
 from slop_code.agent_runner.agents.gemini import GeminiAgent
 from slop_code.agent_runner.agents.gemini import GeminiConfig
 from slop_code.agent_runner.agents.opencode import OpenCodeAgentConfig
 from slop_code.agent_runner.agents.openhands import OpenHandsAgent
 from slop_code.agent_runner.agents.openhands import OpenHandsConfig
+from slop_code.agent_runner.agents.pi import PiAgent
+from slop_code.agent_runner.agents.pi import PiConfig
 from slop_code.agent_runner.registry import iter_agent_config_types
 
 
@@ -35,9 +39,13 @@ __all__ = [
     "ClaudeCodeConfig",
     "CodexAgent",
     "CodexConfig",
+    "CursorCliAgent",
+    "CursorCliConfig",
     "GeminiAgent",
     "GeminiConfig",
     "OpenCodeAgentConfig",
     "OpenHandsAgent",
     "OpenHandsConfig",
+    "PiAgent",
+    "PiConfig",
 ]

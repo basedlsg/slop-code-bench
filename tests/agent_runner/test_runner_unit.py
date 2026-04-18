@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.models import UsageTracker
 from slop_code.agent_runner.resume import ResumeInfo
 from slop_code.common import PROMPT_FILENAME
+from slop_code.common.llms import TokenUsage
 
 
 class StubCheckpoint:
@@ -24,47 +26,74 @@ class StubCheckpoint:
         return self._spec_text
 
 
+@dataclass(frozen=True)
+class ReplayCase:
+    path_exists: bool
+    is_file: bool
+    supports: bool
+    expected: bool
+
+
+def _usage(cost: float = 0.0, steps: int = 0) -> UsageTracker:
+    return UsageTracker(
+        cost=cost,
+        steps=steps,
+        net_tokens=TokenUsage(),
+        current_tokens=TokenUsage(),
+    )
+
+
 @pytest.mark.parametrize(
-    ("path_exists", "is_file", "supports", "expected"),
+    "case",
     [
-        (False, False, True, False),
-        (True, False, True, False),
-        (True, True, False, False),
-        (True, True, True, True),
+        ReplayCase(
+            path_exists=False, is_file=False, supports=True, expected=False
+        ),
+        ReplayCase(
+            path_exists=True, is_file=False, supports=True, expected=False
+        ),
+        ReplayCase(
+            path_exists=True, is_file=True, supports=False, expected=False
+        ),
+        ReplayCase(
+            path_exists=True, is_file=True, supports=True, expected=True
+        ),
     ],
 )
 def test_should_run_replay(
     tmp_path: Path,
-    path_exists: bool,
-    is_file: bool,
-    supports: bool,
-    expected: bool,
+    case: ReplayCase,
 ) -> None:
     agent = Mock(spec=Agent)
-    agent.supports_replay.return_value = supports
+    agent.supports_replay.return_value = case.supports
 
     replay_path = tmp_path / "replay.json"
-    if path_exists:
+    if case.path_exists:
         replay_path.write_text("{}")
-        if not is_file:
+        if not case.is_file:
             replay_path.unlink()
             replay_path.mkdir()
 
     assert (
-        runner._should_run_replay(replay_path if path_exists else None, agent)
-        is expected
+        runner._should_run_replay(
+            replay_path if case.path_exists else None, agent
+        )
+        is case.expected
     )
 
-    if path_exists:
+    if case.path_exists:
         assert agent.supports_replay.call_count >= 1
     else:
         assert agent.supports_replay.call_count == 0
 
 
-def test_run_checkpoint_task_uses_replay_when_available() -> None:
+def test_run_checkpoint_task_uses_replay_when_available(
+    tmp_path: Path,
+) -> None:
     agent = Mock(spec=Agent)
     replay_result = sentinel.replay_result
     agent.run_replay.return_value = replay_result
+    replay_path = tmp_path / "replay.json"
 
     with patch(
         "slop_code.agent_runner.runner._should_run_replay",
@@ -74,7 +103,7 @@ def test_run_checkpoint_task_uses_replay_when_available() -> None:
             agent=agent,
             task="ignored",
             checkpoint_name="ckpt",
-            replay_path=Path("/tmp/replay.json"),
+            replay_path=replay_path,
         )
 
     assert result is replay_result
@@ -236,7 +265,7 @@ def test_run_problem_resume_does_not_treat_first_executed_as_checkpoint_1(
     """
 
     agent = Mock(spec=Agent)
-    agent.usage = UsageTracker()
+    agent.usage = _usage()
 
     run_spec = Mock()
     run_spec.problem = Mock()
@@ -253,7 +282,7 @@ def test_run_problem_resume_does_not_treat_first_executed_as_checkpoint_1(
         resume_from_checkpoint="checkpoint_3",
         completed_checkpoints=["checkpoint_1", "checkpoint_2"],
         last_snapshot_dir=None,
-        prior_usage=UsageTracker(),
+        prior_usage=_usage(),
     )
 
     ar = runner.AgentRunner(
@@ -271,14 +300,14 @@ def test_run_problem_resume_does_not_treat_first_executed_as_checkpoint_1(
     ]
 
     existing_summary = Mock()
-    existing_summary.usage = UsageTracker()
+    existing_summary.usage = _usage()
 
     summary = Mock()
     summary.passed = True
     summary.passed_policy = True
     summary.had_error = False
     summary.checkpoint_name = "checkpoint_3"
-    summary.usage = UsageTracker()
+    summary.usage = _usage()
 
     with (
         patch(
@@ -303,3 +332,77 @@ def test_run_problem_resume_does_not_treat_first_executed_as_checkpoint_1(
     run_ckpt.assert_called_once()
     _, _, is_first_checkpoint = run_ckpt.call_args.args
     assert is_first_checkpoint is False
+
+
+def test_run_problem_resume_does_not_double_count_prior_usage(
+    tmp_path: Path,
+) -> None:
+    """Skipped checkpoints are already included in resume_info.prior_usage."""
+
+    agent = Mock(spec=Agent)
+    agent.usage = _usage(cost=4.0, steps=40)
+
+    run_spec = Mock()
+    run_spec.problem = Mock()
+    run_spec.problem.name = "prob"
+    run_spec.problem.checkpoints = {
+        "checkpoint_1": Mock(),
+        "checkpoint_2": Mock(),
+        "checkpoint_3": Mock(),
+    }
+    run_spec.skip_evaluation = True
+    run_spec.pass_policy = Mock()
+
+    resume_info = ResumeInfo(
+        resume_from_checkpoint="checkpoint_3",
+        completed_checkpoints=["checkpoint_1", "checkpoint_2"],
+        last_snapshot_dir=None,
+        prior_usage=_usage(cost=3.0, steps=30),
+    )
+
+    ar = runner.AgentRunner(
+        run_spec=run_spec,
+        agent=agent,
+        output_path=tmp_path,
+        progress_queue=queue.Queue(),
+        resume_info=resume_info,
+    )
+    ar.metrics_tracker.usage = resume_info.prior_usage.model_copy(deep=True)
+
+    checkpoints = [
+        (StubCheckpoint("checkpoint_1", ""), tmp_path / "checkpoint_1"),
+        (StubCheckpoint("checkpoint_2", ""), tmp_path / "checkpoint_2"),
+        (StubCheckpoint("checkpoint_3", ""), tmp_path / "checkpoint_3"),
+    ]
+
+    skipped_summaries = [
+        Mock(usage=_usage(cost=1.0, steps=10)),
+        Mock(usage=_usage(cost=2.0, steps=20)),
+    ]
+
+    summary = Mock()
+    summary.passed_policy = True
+    summary.had_error = False
+    summary.checkpoint_name = "checkpoint_3"
+    summary.usage = agent.usage
+
+    with (
+        patch(
+            "slop_code.agent_runner.runner.get_checkpoints",
+            return_value=iter(checkpoints),
+        ),
+        patch.object(
+            runner.AgentRunner,
+            "_load_checkpoint_summary",
+            side_effect=skipped_summaries,
+        ),
+        patch.object(
+            runner.AgentRunner,
+            "_run_checkpoint",
+            return_value=summary,
+        ),
+    ):
+        ar._run_problem()
+
+    assert ar.metrics_tracker.usage.cost == 7.0
+    assert ar.metrics_tracker.usage.steps == 70

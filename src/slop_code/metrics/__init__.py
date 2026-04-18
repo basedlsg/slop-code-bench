@@ -27,14 +27,13 @@ from slop_code.metrics.grade import llm_judge_snapshot_batch
 # Language registry
 from slop_code.metrics.languages import get_language
 from slop_code.metrics.languages import get_language_by_extension
-from slop_code.metrics.models import AstGrepMetrics
-from slop_code.metrics.models import AstGrepViolation
-
-# Models - Summary
-from slop_code.metrics.models import CostsStats
-from slop_code.metrics.models import CyclomaticComplexityStats
 
 # Models - Quality
+# Models - Summary
+from slop_code.metrics.models import AstGrepMetrics
+from slop_code.metrics.models import AstGrepViolation
+from slop_code.metrics.models import CostsStats
+from slop_code.metrics.models import CyclomaticComplexityStats
 from slop_code.metrics.models import FileMetrics
 from slop_code.metrics.models import LineCountMetrics
 from slop_code.metrics.models import LintMetrics

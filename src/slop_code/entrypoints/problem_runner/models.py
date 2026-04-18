@@ -138,6 +138,9 @@ class ProblemState(BaseModel):
     checkpoints_iso_passed: int = Field(
         default=0, description="Checkpoints with checkpoint_pass_rate == 1.0"
     )
+    checkpoints_core_solved: int = Field(
+        default=0, description="Checkpoints with core_pass_rate == 1.0"
+    )
     total_checkpoints_evaluated: int = Field(
         default=0, description="Number of checkpoints evaluated so far"
     )
@@ -179,6 +182,9 @@ class ProblemState(BaseModel):
             )
             self.checkpoints_iso_passed = sum(
                 1 for r in metrics_tracker.checkpoint_results if r.iso_passed
+            )
+            self.checkpoints_core_solved = sum(
+                1 for r in metrics_tracker.checkpoint_results if r.core_passed
             )
 
     def get_elapsed_time(self) -> float:

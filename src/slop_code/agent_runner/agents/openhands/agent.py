@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import tempfile
 import typing as tp
 from pathlib import Path
@@ -17,12 +18,13 @@ from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.agents.cli_utils import AgentCommandResult
 from slop_code.agent_runner.agents.cli_utils import stream_cli_command
 from slop_code.agent_runner.agents.utils import HOME_PATH
-from slop_code.agent_runner.credentials import CredentialSpec
 from slop_code.agent_runner.credentials import ProviderCredential
 from slop_code.agent_runner.models import AgentCostLimits
 from slop_code.agent_runner.models import AgentError
 from slop_code.agent_runner.registry import register_agent
 from slop_code.common.llms import APIPricing
+from slop_code.common.llms import ModelDefinition
+from slop_code.common.llms import ThinkingPreset
 from slop_code.common.llms import TokenUsage
 from slop_code.execution import EnvironmentSpec
 from slop_code.execution import Session
@@ -31,9 +33,20 @@ from slop_code.logging import get_logger
 
 log = get_logger(__name__)
 
-# OpenHands binary path - installed in /openhands/.venv
-OPENHANDS_BINARY = "/openhands/.venv/bin/python"
+# OpenHands binary path - installed in /opt/openhands-venv
+OPENHANDS_BINARY = "/opt/openhands-venv/bin/python"
 OPENHANDS_MODULE = "openhands.core.main"
+
+OUTPUT_DIR_NAME = "output"
+TRAJECTORY_FILE_CANDIDATES = ("trajectory.json", "openhands.trajectory.json")
+
+# Prefixes for providers that need explicit LiteLLM provider/model format.
+LITELLM_PROVIDER_PREFIX: dict[str, str] = {
+    "anthropic": "anthropic",
+    "google": "gemini",
+    "openai": "openai",
+    "openrouter": "openrouter",
+}
 
 # Patterns for agent actions in stderr - CmdRunAction, FileEditAction, etc.
 # These match lines from agent_controller logging like:
@@ -56,10 +69,6 @@ class OpenHandsConfig(AgentConfigBase):
     type: tp.Literal["openhands"] = "openhands"
     version: str = Field(
         description="PyPI version of openhands-ai (e.g., '0.62')"
-    )
-    model: str | None = Field(
-        default=None,
-        description="LLM model identifier (e.g., 'anthropic/claude-sonnet-4-20250514')",
     )
     base_url: str | None = Field(
         default=None,
@@ -98,15 +107,14 @@ class OpenHandsAgent(Agent):
     def __init__(
         self,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str,
         # From base config
         cost_limits: AgentCostLimits,
         pricing: APIPricing | None,
-        credentials: CredentialSpec | None,
-        resolved_credential: ProviderCredential | None,
+        credential: ProviderCredential,
         # OpenHands specific
-        model: str | None,
+        model: str,
         base_url: str | None,
         timeout: int | None,
         env: dict[str, str],
@@ -120,8 +128,7 @@ class OpenHandsAgent(Agent):
         )
 
         # Store config values
-        self.credentials = credentials
-        self.resolved_credential = resolved_credential
+        self.credential = credential
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
@@ -142,9 +149,13 @@ class OpenHandsAgent(Agent):
     def _from_config(
         cls,
         config: AgentConfigBase,
+        model: ModelDefinition,
+        credential: ProviderCredential,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str | None,
+        thinking_preset: ThinkingPreset | None = None,
+        thinking_max_tokens: int | None = None,
     ) -> Agent:
         """Create an OpenHandsAgent from an OpenHandsConfig."""
         if not isinstance(config, OpenHandsConfig):
@@ -154,23 +165,22 @@ class OpenHandsAgent(Agent):
         if image is None:
             raise ValueError("OpenHandsAgent requires an image")
 
-        # Resolve base_url from provider if credentials specify openrouter
+        # Get model slug for API calls
+        model_slug = model.get_model_slug(credential.provider)
+
+        # Resolve base_url: config > provider lookup
         base_url = config.base_url
-        if base_url is None and config.credentials is not None:
-            provider = config.credentials.provider
-            if provider in PROVIDER_BASE_URLS:
-                base_url = PROVIDER_BASE_URLS[provider]
+        if base_url is None:
+            base_url = PROVIDER_BASE_URLS.get(credential.provider)
 
         return cls(
             problem_name=problem_name,
             verbose=verbose,
             image=image,
             cost_limits=config.cost_limits,
-            pricing=config.pricing,
-            credentials=config.credentials,
-            resolved_credential=config.get_resolved_credential(),
-            # Use internal_name for API calls (falls back to model if not set)
-            model=config.internal_name or config.model,
+            pricing=model.pricing,
+            credential=credential,
+            model=model_slug,
             base_url=base_url,
             timeout=config.timeout,
             env=config.env,
@@ -180,7 +190,7 @@ class OpenHandsAgent(Agent):
         self,
         line: str,
         pricing: APIPricing | None = None,
-    ) -> tuple[float | None, TokenUsage | None, dict | None]:
+    ) -> tuple[float | None, TokenUsage | None, dict[str, tp.Any]]:
         """Parse a single line from OpenHands output.
 
         OpenHands outputs log lines to stderr. We look for action patterns
@@ -239,13 +249,22 @@ disable_color = true
 
     def _get_output_dir(self) -> Path:
         """Get/create the output directory for trajectory and other outputs."""
-        output_dir = self.tmp_dir / "output"
-        output_dir.mkdir(exist_ok=True)
+        output_dir = self.tmp_dir / OUTPUT_DIR_NAME
+        output_dir.mkdir(exist_ok=True, parents=True)
         return output_dir
 
-    def _get_volumes(self) -> dict[str, dict[str, str]]:
+    def _clear_output_dir(self) -> None:
+        """Clear OpenHands output directory between checkpoints."""
+        output_dir = self._get_output_dir()
+        for entry in output_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+
+    def _get_volumes(self) -> dict[str, dict[str, str] | str]:
         """Get volume mounts for the OpenHands agent."""
-        volumes: dict[str, dict[str, str]] = {}
+        volumes: dict[str, dict[str, str] | str] = {}
 
         # Mount config.toml
         config_path = self._make_config_toml()
@@ -276,12 +295,19 @@ disable_color = true
         if self._tmp_dir is None:
             return 0.0, TokenUsage()
 
-        trajectory_path = (
-            Path(self._tmp_dir.name) / "output" / "trajectory.json"
+        output_dir = Path(self._tmp_dir.name) / OUTPUT_DIR_NAME
+        trajectory_path = next(
+            (
+                output_dir / candidate
+                for candidate in TRAJECTORY_FILE_CANDIDATES
+                if (output_dir / candidate).exists()
+            ),
+            None,
         )
-        if not trajectory_path.exists():
+        if trajectory_path is None:
             self.log.debug(
-                "Trajectory file not found", path=str(trajectory_path)
+                "Trajectory file not found",
+                checked=TRAJECTORY_FILE_CANDIDATES,
             )
             return 0.0, TokenUsage()
 
@@ -352,6 +378,7 @@ disable_color = true
         """Execute a task through OpenHands."""
         self._last_prompt = task
         self._last_command = None
+        self._clear_output_dir()
 
         log_kwargs: dict[str, tp.Any] = {
             "workspace": str(self.session.working_dir),
@@ -415,7 +442,7 @@ disable_color = true
         for item in stream_cli_command(
             runtime=self.runtime,
             command=command,
-            parser=self.parse_line,
+            parser=lambda line: self.parse_line(line),
             env=env_overrides,
             timeout=(float(self.timeout) if self.timeout is not None else None),
             parse_stderr=True,  # OpenHands logs actions to stderr
@@ -469,53 +496,46 @@ disable_color = true
     def _prepare_runtime_execution(
         self,
         task: str,
-    ) -> tuple[list[str], dict[str, str]]:
+    ) -> tuple[str, dict[str, str]]:
         """Prepare command and environment overrides for runtime execution."""
-        # Build environment variables - FORCE SET all required settings
-        # Note: disable_color is set in config.toml, not as env var
+        # Build environment variables matching OpenHands local runtime mode.
         env_overrides: dict[str, str] = {
-            # Runtime mode - CLI since we're inside Docker already
-            "RUNTIME": "cli",
-            # Disable jupyter (not needed for coding tasks)
-            "AGENT_ENABLE_JUPYTER": "false",
-            # Mount workspace
-            "SANDBOX_VOLUMES": "/workspace:/workspace:rw",
             # Disable browsing and prompt extensions
             "AGENT_ENABLE_PROMPT_EXTENSIONS": "false",
             "AGENT_ENABLE_BROWSING": "false",
             "ENABLE_BROWSER": "false",
             # Sandbox settings
-            "SANDBOX_ENABLE_AUTO_LINT": "false",
+            "SANDBOX_ENABLE_AUTO_LINT": "true",
             # Disable dependency check
             "SKIP_DEPENDENCY_CHECK": "1",
-            # We're running in a sandboxed environment
+            # Run inside existing container workspace/runtime
             "RUN_AS_OPENHANDS": "false",
+            "RUNTIME": "local",
+            "SU_TO_USER": "false",
             # Enable event logging
             "LOG_ALL_EVENTS": "true",
             # Skip VSCode build
             "SKIP_VSCODE_BUILD": "true",
-            # Set trajectory save path (mounted from tmp_dir/output)
+            # Save trajectory and logs into mounted output path.
             "SAVE_TRAJECTORY_PATH": "/openhands/output/trajectory.json",
+            "FILE_STORE": "local",
+            "FILE_STORE_PATH": "/openhands/output",
+            "LLM_LOG_COMPLETIONS": "true",
+            "LLM_LOG_COMPLETIONS_FOLDER": "/openhands/output/completions",
         }
 
         # Credentials - use LLM_API_KEY
-        if self.resolved_credential is not None:
-            env_overrides["LLM_API_KEY"] = self.resolved_credential.value
+        if self.credential is not None:
+            env_overrides["LLM_API_KEY"] = self.credential.value
         else:
             raise AgentError("OpenHandsAgent requires a credential")
 
         # Model
         if self.model:
-            if self.resolved_credential.provider == "openrouter":
-                env_overrides["LLM_MODEL"] = f"openrouter/{self.model}"
-            else:
-                env_overrides["LLM_MODEL"] = self.model
+            env_overrides["LLM_MODEL"] = self._resolve_model_name()
         else:
             raise AgentError("OpenHandsAgent requires a model")
 
-        # Base URL for OpenRouter or custom endpoints
-        if self.base_url:
-            env_overrides["LLM_BASE_URL"] = self.base_url
         # Base URL for OpenRouter or custom endpoints
         if self.base_url:
             env_overrides["LLM_BASE_URL"] = self.base_url
@@ -536,12 +556,31 @@ disable_color = true
         command = self._build_command(task)
         return command, env_overrides
 
-    def _build_command(self, task: str) -> list[str]:
-        """Build CLI command arguments for OpenHands."""
-        command = [OPENHANDS_BINARY, "-u", "-m", OPENHANDS_MODULE]
-        command.extend(["--config-file", "/openhands/config.toml"])
-        command.extend(["--task", shlex.quote(task)])
-        return command
+    def _resolve_model_name(self) -> str:
+        """Resolve OpenHands LLM model in provider/model form when needed."""
+        if self.credential.provider == "openrouter":
+            if self.model.startswith("openrouter/"):
+                return self.model
+            return f"openrouter/{self.model}"
+        if "/" in self.model:
+            return self.model
+        provider = LITELLM_PROVIDER_PREFIX.get(
+            self.credential.provider, self.credential.provider
+        )
+        return f"{provider}/{self.model}"
+
+    def _build_command(self, task: str) -> str:
+        """Build OpenHands command for local runtime mode."""
+        escaped_task = shlex.quote(task)
+        return " ".join(
+            [
+                "SANDBOX_VOLUMES=${PWD}:/workspace:rw",
+                "USER=$(id -un)",
+                f"{OPENHANDS_BINARY} -u -m {OPENHANDS_MODULE}",
+                "--config-file /openhands/config.toml",
+                f"--task={escaped_task}",
+            ]
+        )
 
     @classmethod
     def _write_artifacts(
@@ -561,6 +600,8 @@ disable_color = true
         self._last_command = None
         self._events = []
         self._stdout_lines = []
+        if self._tmp_dir is not None:
+            self._clear_output_dir()
 
     def save_artifacts(self, path: Path) -> None:
         """Save agent execution artifacts to the specified directory."""
@@ -589,17 +630,29 @@ disable_color = true
 
         # Copy trajectory file from mounted output directory
         if self._tmp_dir is not None:
-            trajectory_src = (
-                Path(self._tmp_dir.name) / "output" / "trajectory.json"
+            output_dir = Path(self._tmp_dir.name) / OUTPUT_DIR_NAME
+            if output_dir.exists():
+                for item in output_dir.iterdir():
+                    target = path / item.name
+                    if item.is_dir():
+                        shutil.copytree(item, target, dirs_exist_ok=True)
+                    else:
+                        target.write_text(item.read_text())
+
+            # Keep the canonical SCB artifact name even if OpenHands used
+            # alternate trajectory naming.
+            trajectory_src = next(
+                (
+                    output_dir / candidate
+                    for candidate in TRAJECTORY_FILE_CANDIDATES
+                    if (output_dir / candidate).exists()
+                ),
+                None,
             )
-            if trajectory_src.exists():
+            if trajectory_src is not None:
                 trajectory_dst = path / self.TRAJECTORY_FILENAME
-                trajectory_dst.write_text(trajectory_src.read_text())
-                self.log.debug(
-                    "Saved trajectory file",
-                    src=str(trajectory_src),
-                    dst=str(trajectory_dst),
-                )
+                if trajectory_dst != trajectory_src:
+                    trajectory_dst.write_text(trajectory_src.read_text())
 
     def cleanup(self) -> None:
         """Clean up resources held by the OpenHands agent."""

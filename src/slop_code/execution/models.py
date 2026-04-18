@@ -120,7 +120,22 @@ class SnapshotConfig(BaseModel):
         description="Glob patterns of files to always include in snapshots.",
     )
     ignore_globs: set[str] = Field(
-        default={"*.pyc", "venv/*", ".venv/*", f"{WORKSPACE_TEST_DIR}/*"},
+        default={
+            "*.pyc",
+            "__pycache__/*",
+            "venv/*",
+            ".venv/*",
+            f"{WORKSPACE_TEST_DIR}/*",
+            # Tool caches
+            ".ruff_cache/*",
+            ".pytest_cache/*",
+            ".mypy_cache/*",
+            # Agent artifacts
+            ".opencode/*",
+            ".claude/*",
+            # Node
+            "node_modules/*",
+        },
         description="Glob patterns of files to exclude from snapshots.",
     )
     compression: str = Field(

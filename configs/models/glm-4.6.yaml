@@ -23,15 +23,23 @@ agent_specific:
     env_overrides:
       ANTHROPIC_DEFAULT_SONNET_MODEL: glm-4.6
       ANTHROPIC_DEFAULT_OPUS_MODEL: glm-4.6
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: glm-4.5-air
+      CLAUDE_CODE_SUBAGENT_MODEL: glm-4.5-air
+    provider_env_overrides:
+      openrouter:
+        ANTHROPIC_DEFAULT_SONNET_MODEL: z-ai/glm-4.6
+        ANTHROPIC_DEFAULT_OPUS_MODEL: z-ai/glm-4.6
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: z-ai/glm-4.7-flash
+        CLAUDE_CODE_SUBAGENT_MODEL: z-ai/glm-4.7-flash
 
   opencode:
     endpoint: openai
-    provider_name: zai-coding-plan
+    provider_name: zhipu
     model: glm-4.6
     config:
       "$schema": "https://opencode.ai/config.json"
       provider:
-        zai-coding-plan:
+        zhipu:
           models:
             glm-4.6:
               options:

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
+from slop_code.entrypoints.commands import (
+    backfill_reports as backfill_reports_module,
+)
 from slop_code.entrypoints.commands.backfill_reports import (
     _update_ast_grep_jsonl,
 )
@@ -44,7 +49,7 @@ def test_update_ast_grep_jsonl_filters_out_unknown_rules(
     )
     overall_path.write_text(json.dumps({"ast_grep": {}}))
 
-    rules_lookup = {
+    rules_lookup: dict[str, dict[str, str | int]] = {
         "manual-sum-loop": {
             "category": "slop",
             "subcategory": "slop",
@@ -77,3 +82,66 @@ def test_update_ast_grep_jsonl_filters_out_unknown_rules(
     assert overall["ast_grep"]["violations"] == 1
     assert overall["ast_grep"]["category_counts"] == {"slop": 1}
     assert overall["ast_grep"]["category_weighted"] == {"slop": 4}
+
+
+def test_backfill_reports_preserves_costs_for_all_agents(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.yaml").write_text(
+        json.dumps(
+            {
+                "agent": {"type": "codex"},
+                "model": {
+                    "name": "priced-model",
+                    "pricing": {
+                        "input": 10.0,
+                        "output": 0.0,
+                        "cache_read": 0.0,
+                        "cache_write": 0.0,
+                    },
+                },
+            }
+        )
+    )
+
+    reports = [
+        {
+            "problem": "example",
+            "checkpoint": "checkpoint_1",
+            "input": 1_000_000,
+            "output": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "cost": 0.25,
+        }
+    ]
+    written_reports: list[dict] = []
+
+    monkeypatch.setattr(
+        backfill_reports_module,
+        "_process_single_run_backfill",
+        lambda ctx, results_dir, logger: (reports, [], 1),
+    )
+    monkeypatch.setattr(
+        backfill_reports_module,
+        "build_ast_grep_rules_lookup",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        backfill_reports_module,
+        "update_results_jsonl",
+        lambda report_file, new_reports: written_reports.extend(new_reports),
+    )
+    monkeypatch.setattr(
+        backfill_reports_module,
+        "display_and_save_summary",
+        lambda report_file, results_dir, config, console: None,
+    )
+    ctx = cast("Any", SimpleNamespace(obj=SimpleNamespace(verbosity=0)))
+
+    backfill_reports_module.backfill_reports(ctx, run_dir)
+
+    assert written_reports[0]["cost"] == 0.25

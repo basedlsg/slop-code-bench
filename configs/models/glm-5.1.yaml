@@ -1,0 +1,50 @@
+internal_name: glm-5.1
+provider: zhipu
+pricing:
+  input: 1.4
+  output: 4.4
+  cache_read: 0.26
+  cache_write: 0.75
+aliases: []
+provider_slugs:
+  openrouter: z-ai/glm-5.1
+
+# Endpoints are resolved from the CLI provider, not this config's provider.
+# Use --model zhipu-coding-plan/glm-5.1 to use ZAI coding plan endpoints.
+agent_specific:
+  mini_swe:
+    endpoint: openai
+    model_name: openai/glm-5.1
+    model_class: litellm
+    thinking_enabled: true
+
+  claude_code:
+    endpoint: anthropic
+    env_overrides:
+      ANTHROPIC_DEFAULT_SONNET_MODEL: glm-5.1
+      ANTHROPIC_DEFAULT_OPUS_MODEL: glm-5.1
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: glm-4.7-air
+      CLAUDE_CODE_SUBAGENT_MODEL: glm-4.7-air
+    provider_env_overrides:
+      openrouter:
+        ANTHROPIC_DEFAULT_SONNET_MODEL: z-ai/glm-5.1
+        ANTHROPIC_DEFAULT_OPUS_MODEL: z-ai/glm-5.1
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: z-ai/glm-4.7-flash
+        CLAUDE_CODE_SUBAGENT_MODEL: z-ai/glm-4.7-flash
+
+  opencode:
+    provider_name: openrouter
+    config:
+      "$schema": "https://opencode.ai/config.json"
+      provider:
+        openrouter:
+          models:
+            z-ai/glm-5.1:
+              options:
+                thinking:
+                  type: "enabled"
+                stream_options:
+                  include_usage: true
+
+  codex:
+    thinking: high

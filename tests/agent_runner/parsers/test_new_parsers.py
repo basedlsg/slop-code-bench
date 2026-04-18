@@ -6,10 +6,12 @@ import pytest
 
 from slop_code.agent_runner.agents.claude_code.parser import ClaudeCodeParser
 from slop_code.agent_runner.agents.codex.parser import CodexParser
+from slop_code.agent_runner.agents.cursor_cli.parser import CursorCliParser
 from slop_code.agent_runner.agents.gemini.parser import GeminiParser
 from slop_code.agent_runner.agents.miniswe.parser import MinisweParser
 from slop_code.agent_runner.agents.opencode.parser import OpenCodeParser
 from slop_code.agent_runner.agents.openhands.parser import OpenHandsParser
+from slop_code.agent_runner.agents.pi.parser import PiParser
 from slop_code.agent_runner.trajectory import AgentStep
 from slop_code.agent_runner.trajectory import ThinkingStep
 from slop_code.agent_runner.trajectory import ToolUseStep
@@ -104,6 +106,47 @@ class TestClaudeCodeParser:
         assert traj.metadata["model"] == "claude-3"
         assert traj.metadata["tools"] == ["Bash", "Read"]
         assert traj.metadata["session_id"] == "abc123"
+
+
+class TestCursorCliParser:
+    """Tests for CursorCliParser."""
+
+    def test_can_parse_cursor_file(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"system","subtype":"init","apiKeySource":"env","cwd":"/workspace","session_id":"abc","model":"sonnet-4.5","permissionMode":"default"}\n'
+        )
+        parser = CursorCliParser()
+        assert parser.can_parse(tmp_path) is True
+
+    def test_cannot_parse_plain_claude_init(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"system","subtype":"init","model":"claude-sonnet"}\n'
+        )
+        parser = CursorCliParser()
+        assert parser.can_parse(tmp_path) is False
+
+    def test_parse_thinking_and_tool_call(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"system","subtype":"init","apiKeySource":"env","cwd":"/workspace","session_id":"abc","model":"sonnet-4.5","permissionMode":"default"}\n'
+            '{"type":"thinking","subtype":"delta","text":"Need to inspect files","session_id":"abc","timestamp_ms":1700000000000}\n'
+            '{"type":"assistant","session_id":"abc","model_call_id":"call-1","message":{"role":"assistant","content":[{"type":"text","text":"I will run ls"}]}}\n'
+            '{"type":"tool_call","subtype":"completed","call_id":"tool-1","session_id":"abc","model_call_id":"call-1","timestamp_ms":1700000001000,"tool_call":{"run_terminal_cmd":{"args":{"command":"ls"},"result":"file.txt"}}}\n'
+        )
+
+        parser = CursorCliParser()
+        traj = parser.parse(tmp_path)
+
+        assert traj.agent_type == "cursor_cli"
+        assert len(traj.steps) == 3
+        assert isinstance(traj.steps[0], ThinkingStep)
+        assert isinstance(traj.steps[1], AgentStep)
+        assert isinstance(traj.steps[2], ToolUseStep)
+        assert traj.steps[2].type == "run_terminal_cmd"
+        assert traj.steps[2].arguments == {"command": "ls"}
+        assert traj.steps[2].result == "file.txt"
 
 
 class TestCodexParser:
@@ -238,6 +281,17 @@ class TestParseTrajectory:
 
         traj = parse_trajectory(tmp_path)
         assert traj.agent_type == "claude_code"
+
+    def test_auto_detect_cursor_cli(self, tmp_path: Path) -> None:
+        """Test auto-detection of Cursor CLI format."""
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"system","subtype":"init","apiKeySource":"env","cwd":"/workspace","session_id":"abc","model":"sonnet-4.5","permissionMode":"default"}\n'
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}\n'
+        )
+
+        traj = parse_trajectory(tmp_path)
+        assert traj.agent_type == "cursor_cli"
 
     def test_auto_detect_codex(self, tmp_path: Path) -> None:
         """Test auto-detection of Codex format."""
@@ -624,3 +678,62 @@ class TestAutoDetectNewParsers:
 
         traj = parse_trajectory(tmp_path)
         assert traj.agent_type == "miniswe"
+
+
+class TestPiParser:
+    """Tests for PiParser."""
+
+    def test_can_parse_pi_file(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"ls"}}\n'
+        )
+        parser = PiParser()
+        assert parser.can_parse(tmp_path) is True
+
+    def test_cannot_parse_non_pi_file(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text('{"type":"thread.started","thread_id":"abc"}\n')
+        parser = PiParser()
+        assert parser.can_parse(tmp_path) is False
+
+    def test_parse_message_and_tool_events(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"},{"type":"text","text":"Running ls"}]}}\n'
+            '{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"ls"}}\n'
+            '{"type":"tool_execution_update","toolCallId":"call_1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"a\\n"}]}}\n'
+            '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"a\\nb\\n"}]},"isError":false}\n'
+        )
+        parser = PiParser()
+        traj = parser.parse(tmp_path)
+
+        assert traj.agent_type == "pi"
+        assert len(traj.steps) == 3
+        assert isinstance(traj.steps[0], ThinkingStep)
+        assert isinstance(traj.steps[1], AgentStep)
+        assert isinstance(traj.steps[2], ToolUseStep)
+        assert traj.steps[2].type == "bash"
+        assert traj.steps[2].arguments == {"command": "ls"}
+        assert traj.steps[2].result == "a\nb\n"
+
+    def test_parse_ignores_unknown_events(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}\n'
+            '{"type":"completely_unknown_event","value":123}\n'
+        )
+        parser = PiParser()
+        traj = parser.parse(tmp_path)
+
+        assert len(traj.steps) == 1
+        assert isinstance(traj.steps[0], AgentStep)
+        assert traj.steps[0].content == "Hi"
+
+    def test_auto_detect_pi(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "stdout.jsonl"
+        jsonl.write_text(
+            '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}\n'
+        )
+        traj = parse_trajectory(tmp_path)
+        assert traj.agent_type == "pi"

@@ -1,5 +1,7 @@
 internal_name: gpt-5.3-codex
 provider: openai
+provider_slugs:
+  openai-codex: gpt-5.3-codex
 pricing:
   input: 1.75
   output: 14.00

@@ -1,0 +1,23 @@
+internal_name: minimax-m2.7
+provider: openrouter
+pricing:
+  input: 0.3
+  output: 1.2
+  cache_read: 0.06
+  cache_write: 0.375
+aliases:
+  - minimax/minimax-m2.7
+provider_slugs:
+  openrouter: minimax/minimax-m2.7
+
+agent_specific:
+  opencode:
+    provider_name: openrouter
+
+  claude_code:
+    endpoint: anthropic
+    env_overrides:
+      ANTHROPIC_DEFAULT_OPUS_MODEL: minimax/minimax-m2.7
+      ANTHROPIC_DEFAULT_SONNET_MODEL: minimax/minimax-m2.7
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: minimax/minimax-m2.7
+      CLAUDE_CODE_SUBAGENT_MODEL: minimax/minimax-m2.7

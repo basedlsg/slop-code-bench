@@ -21,10 +21,22 @@ providers:
     env_var: OPENAI_API_KEY
     description: OpenAI API key
 
+  cursor:
+    type: env_var
+    env_var: CURSOR_API_KEY
+    description: Cursor API key for Cursor CLI
+
   openrouter:
     type: env_var
     env_var: OPENROUTER_API_KEY
     description: OpenRouter API key for multi-provider access
+    endpoints:
+      openai:
+        api_base: https://openrouter.ai/api/v1
+        api_format: openai
+      anthropic:
+        api_base: https://openrouter.ai/api
+        api_format: anthropic
 
   zhipu:
     type: env_var
@@ -83,10 +95,40 @@ providers:
     env_var: AWS_BEARER_TOKEN_BEDROCK
     description: AWS Bedrock bearer token for Claude Code via Bedrock
 
+  foundry:
+    type: env_var
+    env_var: ANTHROPIC_FOUNDRY_API_KEY
+    description: Microsoft (Azure AI) Foundry API key for Claude Code via Foundry
+
   xai:
     type: env_var
     env_var: XAI_API_KEY
     description: xAI API key for Grok models
+
+  cerebras:
+    type: env_var
+    env_var: CEREBRAS_API_KEY
+    description: Cerebras API key
+
+  zai:
+    type: env_var
+    env_var: ZAI_API_KEY
+    description: ZAI API key
+
+  ai_gateway:
+    type: env_var
+    env_var: AI_GATEWAY_API_KEY
+    description: Vercel AI Gateway API key
+
+  vercel-ai-gateway:
+    type: env_var
+    env_var: AI_GATEWAY_API_KEY
+    description: Vercel AI Gateway API key (hyphenated provider name)
+
+  minimax:
+    type: env_var
+    env_var: MINIMAX_API_KEY
+    description: MiniMax API key
 
   moonshot:
     type: env_var

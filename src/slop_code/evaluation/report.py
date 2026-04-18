@@ -237,6 +237,10 @@ class CorrectnessResults(BaseModel):
     pytest_collected: int = Field(
         description="Number of tests collected by pytest"
     )
+    test_collection_hash: str | None = Field(
+        default=None,
+        description="Deterministic hash of collected checkpoint tests",
+    )
     infrastructure_failure: bool = Field(
         default=False,
         description="Whether pytest execution itself failed (not just test failures)",
@@ -267,14 +271,23 @@ class CorrectnessResults(BaseModel):
 
         Returns:
             Dict with keys like "checkpoint_1-Core" and values like
-            {"passed": ["test_id1", ...], "failed": ["test_id2", ...]}
+            {
+                "passed": ["test_id1", ...],
+                "failed": ["test_id2", ...],
+                "skipped": ["test_id3", ...],
+            }
         """
         grouped: dict[str, dict[str, list[str]]] = {}
         for test in self.tests:
             key = f"{test.checkpoint}-{test.group_type.value}"
             if key not in grouped:
-                grouped[key] = {"passed": [], "failed": []}
-            bucket = "passed" if test.status == "passed" else "failed"
+                grouped[key] = {"passed": [], "failed": [], "skipped": []}
+            if test.status == "passed":
+                bucket = "passed"
+            elif test.status in {"failed", "error"}:
+                bucket = "failed"
+            else:
+                bucket = "skipped"
             grouped[key][bucket].append(test.id)
         return grouped
 
@@ -416,4 +429,34 @@ class CorrectnessResults(BaseModel):
         eval_path = dir_path / "evaluation.json"
         with eval_path.open() as f:
             data = json.load(f)
+        if isinstance(data.get("tests"), dict):
+            data["tests"] = cls._ungroup_tests(data["tests"])
         return cls(**data)
+
+    @staticmethod
+    def _ungroup_tests(
+        grouped: dict[str, dict[str, list[str]]],
+    ) -> list[dict[str, Any]]:
+        """Reconstruct a TestResult list from the grouped-serialization format.
+
+        The save format is lossy (duration_ms and file_path are dropped), so
+        those fields come back as 0.0 and "". Sufficient for counting, status
+        checks, and downstream aggregation.
+        """
+        tests: list[dict[str, Any]] = []
+        for key, buckets in grouped.items():
+            checkpoint, _, group_value = key.rpartition("-")
+            for bucket_name, test_ids in buckets.items():
+                status = "passed" if bucket_name == "passed" else bucket_name
+                for test_id in test_ids:
+                    tests.append(
+                        {
+                            "id": test_id,
+                            "checkpoint": checkpoint,
+                            "group_type": group_value,
+                            "status": status,
+                            "duration_ms": 0.0,
+                            "file_path": "",
+                        }
+                    )
+        return tests

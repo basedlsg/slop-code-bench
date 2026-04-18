@@ -9,6 +9,8 @@ from unittest.mock import Mock
 import pytest
 
 from slop_code.common import WORKSPACE_TEST_DIR
+from slop_code.evaluation.collection import CheckpointTestCollection
+from slop_code.evaluation.collection import CollectedTestCase
 from slop_code.evaluation.config import CheckpointConfig
 from slop_code.evaluation.config import ProblemConfig
 from slop_code.evaluation.pytest_runner import EXIT_INTERNALERROR
@@ -21,7 +23,9 @@ from slop_code.evaluation.pytest_runner import INFRA_FAILURE_CODES
 from slop_code.evaluation.pytest_runner import VALID_EXIT_CODES
 from slop_code.evaluation.pytest_runner import PytestRunner
 from slop_code.evaluation.pytest_runner import run_checkpoint_pytest
+from slop_code.evaluation.report import CorrectnessResults
 from slop_code.evaluation.report import GroupType
+from slop_code.evaluation.report import TestResult as EvalTestResult
 from slop_code.execution import EnvironmentSpec
 
 
@@ -80,7 +84,7 @@ def pytest_runner(
         problem=mock_problem_config,
         checkpoint=mock_checkpoint_config,
         environment=mock_environment,
-        submission_path=Path("/tmp/submission"),
+        submission_path=Path("submission"),
     )
 
 
@@ -122,13 +126,13 @@ class TestPytestRunner:
             problem=mock_problem_config,
             checkpoint=mock_checkpoint_config,
             environment=mock_environment,
-            submission_path=Path("/tmp/test"),
+            submission_path=Path("test"),
         )
 
         assert runner.problem == mock_problem_config
         assert runner.checkpoint == mock_checkpoint_config
         assert runner.environment == mock_environment
-        assert runner.submission_path == Path("/tmp/test")
+        assert runner.submission_path == Path("test")
 
     def test_get_entrypoint_command(self, pytest_runner, mock_environment):
         """_get_entrypoint_command returns formatted command."""
@@ -321,7 +325,7 @@ class TestPytestRunner:
             problem=mock_problem_config,
             checkpoint=mock_checkpoint_config,
             environment=mock_environment,
-            submission_path=Path("/tmp/test"),
+            submission_path=Path("test"),
         )
 
         cmd = runner._build_pytest_command()
@@ -341,7 +345,7 @@ class TestPytestRunner:
             problem=mock_problem_config,
             checkpoint=mock_checkpoint_config,
             environment=mock_environment,
-            submission_path=Path("/tmp/test"),
+            submission_path=Path("test"),
         )
 
         cmd = runner._build_pytest_command()
@@ -358,7 +362,7 @@ class TestPytestRunner:
             problem=mock_problem_config,
             checkpoint=mock_checkpoint_config,
             environment=mock_environment,
-            submission_path=Path("/tmp/test"),
+            submission_path=Path("test"),
         )
 
         cmd = runner._build_pytest_command()
@@ -988,11 +992,17 @@ class TestRunCheckpointPytest:
 
         mock_results = Mock()
 
-        with patch.object(
-            PytestRunner, "run", return_value=mock_results
-        ) as mock_run:
+        with (
+            patch.object(
+                PytestRunner, "run", return_value=mock_results
+            ) as mock_run,
+            patch(
+                "slop_code.evaluation.collection.collect_checkpoint_tc",
+                return_value=None,
+            ),
+        ):
             result = run_checkpoint_pytest(
-                submission_path=Path("/tmp/submission"),
+                submission_path=Path("submission"),
                 problem=mock_problem_config,
                 checkpoint=mock_checkpoint_config,
                 env_spec=mock_environment,
@@ -1000,6 +1010,87 @@ class TestRunCheckpointPytest:
 
             mock_run.assert_called_once()
             assert result == mock_results
+
+    def test_applies_collection_hash_and_backfills_missing_tests(
+        self,
+        mock_problem_config,
+        mock_checkpoint_config,
+        mock_environment,
+    ):
+        """Collection inventory is authoritative for grouped totals and hash."""
+        from unittest.mock import patch
+
+        raw_results = CorrectnessResults(
+            problem_name="test_problem",
+            problem_version=1,
+            checkpoint_name="checkpoint_2",
+            checkpoint_version=1,
+            duration=1.0,
+            entrypoint="python main.py",
+            pytest_exit_code=0,
+            pytest_collected=1,
+        )
+        raw_results.add_test_result(
+            EvalTestResult(
+                id="test_present",
+                checkpoint="checkpoint_2",
+                group_type=GroupType.CORE,
+                status="passed",
+                duration_ms=5.0,
+                file_path="tests/test_checkpoint_2.py",
+            )
+        )
+
+        collected_tests = [
+            CollectedTestCase(
+                nodeid="tests/test_checkpoint_2.py::test_present",
+                test_id="test_present",
+                file_path="tests/test_checkpoint_2.py",
+                checkpoint="checkpoint_2",
+                group_type=GroupType.CORE,
+            ),
+            CollectedTestCase(
+                nodeid="tests/test_checkpoint_2.py::test_missing",
+                test_id="test_missing",
+                file_path="tests/test_checkpoint_2.py",
+                checkpoint="checkpoint_2",
+                group_type=GroupType.FUNCTIONALITY,
+            ),
+        ]
+        collection = CheckpointTestCollection(
+            tests=collected_tests,
+            by_nodeid={test.nodeid: test for test in collected_tests},
+            grouped_test_ids={
+                "checkpoint_2-Core": ["test_present"],
+                "checkpoint_2-Functionality": ["test_missing"],
+            },
+            total_collected=2,
+            test_collection_hash="hash-123",
+            infrastructure_failure=False,
+        )
+
+        with (
+            patch.object(PytestRunner, "run", return_value=raw_results),
+            patch(
+                "slop_code.evaluation.collection.collect_checkpoint_tc",
+                return_value=collection,
+            ),
+        ):
+            result = run_checkpoint_pytest(
+                submission_path=Path("submission"),
+                problem=mock_problem_config,
+                checkpoint=mock_checkpoint_config,
+                env_spec=mock_environment,
+            )
+
+        assert result.test_collection_hash == "hash-123"
+        assert result.pytest_collected == 2
+        assert len(result.tests) == 2
+        assert result.total_counts[GroupType.CORE] == 1
+        assert result.total_counts[GroupType.FUNCTIONALITY] == 1
+        assert result.pass_counts[GroupType.CORE] == 1
+        assert result.pass_counts[GroupType.FUNCTIONALITY] == 0
+        assert result.infrastructure_failure is True
 
 
 class TestPytestRunnerRunMethod:
@@ -1379,6 +1470,302 @@ class TestPytestRunnerRunMethod:
         failed_test = [t for t in results.tests if t.status == "failed"][0]
         assert failed_test.failure_message == "AssertionError: expected True"
 
+    def test_run_handles_unknown_exit_code_as_infra_failure(
+        self,
+        mock_problem_config,
+        mock_checkpoint_config,
+        mock_environment,
+        tmp_path,
+    ):
+        """Unknown exit codes are infra failures without inventory backfill."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+
+        submission_path = tmp_path / "submission"
+        submission_path.mkdir()
+        tests_dir = submission_path / WORKSPACE_TEST_DIR
+        tests_dir.mkdir()
+        (tests_dir / "test_checkpoint_1.py").write_text("# test file")
+        (tests_dir / "test_checkpoint_2.py").write_text("# test file")
+
+        mock_pytest_result = Mock()
+        mock_pytest_result.exit_code = 137
+        mock_pytest_result.stdout = "collected 3 items\n\nKilled"
+        mock_pytest_result.stderr = ""
+        mock_pytest_result.elapsed = 1.0
+
+        mock_runtime = MagicMock()
+        mock_runtime.execute.return_value = mock_pytest_result
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value = mock_runtime
+
+        mock_workspace = MagicMock()
+        mock_workspace.working_dir = submission_path
+
+        runner = PytestRunner(
+            problem=mock_problem_config,
+            checkpoint=mock_checkpoint_config,
+            environment=mock_environment,
+            submission_path=submission_path,
+        )
+        mock_session.workspace = mock_workspace
+
+        with (
+            patch(
+                "slop_code.evaluation.pytest_runner.Session"
+            ) as mock_session_cls,
+            patch(
+                "slop_code.evaluation.pytest_runner.resolve_static_assets"
+            ) as mock_resolve,
+        ):
+            mock_session_cls.from_environment_spec.return_value = mock_session
+            mock_resolve.return_value = {}
+            results = runner.run()
+
+        assert results.infrastructure_failure is True
+        assert results.pytest_exit_code == 137
+        assert results.pytest_collected == 3
+        assert len(results.tests) == 0
+        assert results.total_counts[GroupType.CORE] == 0
+        assert results.total_counts[GroupType.REGRESSION] == 0
+        assert results.total_counts[GroupType.ERROR] == 0
+
+    def test_run_backfills_missing_collected_tests_after_partial_failure(
+        self,
+        mock_problem_config,
+        mock_checkpoint_config,
+        mock_environment,
+        tmp_path,
+    ):
+        """Runner does not backfill missing tests from collection inventory."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+
+        submission_path = tmp_path / "submission"
+        submission_path.mkdir()
+        tests_dir = submission_path / WORKSPACE_TEST_DIR
+        tests_dir.mkdir()
+        (tests_dir / "test_checkpoint_1.py").write_text("# test file")
+        (tests_dir / "test_checkpoint_2.py").write_text("# test file")
+
+        pytest_report_data = {
+            "tests": [
+                {
+                    "nodeid": "tests/test_checkpoint_2.py::test_core_passes",
+                    "outcome": "passed",
+                    "keywords": [],
+                    "call": {"duration": 0.01, "outcome": "passed"},
+                },
+                {
+                    "nodeid": "tests/test_checkpoint_2.py::test_core_fails",
+                    "outcome": "failed",
+                    "keywords": [],
+                    "call": {
+                        "duration": 0.01,
+                        "outcome": "failed",
+                        "longreprtext": "AssertionError: boom",
+                    },
+                },
+            ]
+        }
+        mock_pytest_result = Mock()
+        mock_pytest_result.exit_code = EXIT_INTERRUPTED
+        mock_pytest_result.stdout = "collected 5 items\n\nKilled"
+        mock_pytest_result.stderr = ""
+        mock_pytest_result.elapsed = 1.0
+
+        mock_runtime = MagicMock()
+        mock_runtime.execute.return_value = mock_pytest_result
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value = mock_runtime
+
+        mock_workspace = MagicMock()
+        mock_workspace.working_dir = submission_path
+
+        runner = PytestRunner(
+            problem=mock_problem_config,
+            checkpoint=mock_checkpoint_config,
+            environment=mock_environment,
+            submission_path=submission_path,
+        )
+        mock_session.workspace = mock_workspace
+
+        with (
+            patch(
+                "slop_code.evaluation.pytest_runner.Session"
+            ) as mock_session_cls,
+            patch(
+                "slop_code.evaluation.pytest_runner.resolve_static_assets"
+            ) as mock_resolve,
+        ):
+            mock_session_cls.from_environment_spec.return_value = mock_session
+            mock_resolve.return_value = {}
+
+            scbench_dir = submission_path / ".scbench"
+            scbench_dir.mkdir()
+            (scbench_dir / "pytest-report.json").write_text(
+                json.dumps(pytest_report_data)
+            )
+
+            results = runner.run()
+
+        def nodeid_for(result):
+            if result.file_path and not result.id.startswith(
+                f"{result.file_path}::"
+            ):
+                return f"{result.file_path}::{result.id}"
+            return result.id
+
+        statuses = {nodeid_for(test): test.status for test in results.tests}
+        assert results.infrastructure_failure is True
+        assert results.pytest_collected == 5
+        assert len(results.tests) == 2
+        assert (
+            statuses["tests/test_checkpoint_2.py::test_core_passes"] == "passed"
+        )
+        assert (
+            statuses["tests/test_checkpoint_2.py::test_core_fails"] == "failed"
+        )
+        assert results.total_counts[GroupType.CORE] == 2
+        assert results.total_counts[GroupType.REGRESSION] == 0
+        assert results.total_counts[GroupType.ERROR] == 0
+        assert sum(results.total_counts.values()) == 2
+
+    def test_run_uses_stdout_outcomes_when_reports_missing(
+        self,
+        mock_problem_config,
+        mock_checkpoint_config,
+        mock_environment,
+        tmp_path,
+    ):
+        """Runner does not infer per-test outcomes from stdout alone."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+
+        submission_path = tmp_path / "submission"
+        submission_path.mkdir()
+        tests_dir = submission_path / WORKSPACE_TEST_DIR
+        tests_dir.mkdir()
+        (tests_dir / "test_checkpoint_1.py").write_text("# test file")
+        (tests_dir / "test_checkpoint_2.py").write_text("# test file")
+
+        mock_pytest_result = Mock()
+        mock_pytest_result.exit_code = 137
+        mock_pytest_result.stdout = "\n".join(
+            [
+                "collected 4 items",
+                "",
+                "tests/test_checkpoint_2.py::test_one PASSED [ 25%]",
+                "tests/test_checkpoint_2.py::test_two FAILED [ 50%]",
+                "Killed",
+            ]
+        )
+        mock_pytest_result.stderr = ""
+        mock_pytest_result.elapsed = 1.0
+
+        mock_runtime = MagicMock()
+        mock_runtime.execute.return_value = mock_pytest_result
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value = mock_runtime
+
+        mock_workspace = MagicMock()
+        mock_workspace.working_dir = submission_path
+
+        runner = PytestRunner(
+            problem=mock_problem_config,
+            checkpoint=mock_checkpoint_config,
+            environment=mock_environment,
+            submission_path=submission_path,
+        )
+        mock_session.workspace = mock_workspace
+
+        with (
+            patch(
+                "slop_code.evaluation.pytest_runner.Session"
+            ) as mock_session_cls,
+            patch(
+                "slop_code.evaluation.pytest_runner.resolve_static_assets"
+            ) as mock_resolve,
+        ):
+            mock_session_cls.from_environment_spec.return_value = mock_session
+            mock_resolve.return_value = {}
+
+            scbench_dir = submission_path / ".scbench"
+            scbench_dir.mkdir()
+            results = runner.run()
+
+        assert len(results.tests) == 0
+        assert results.total_counts[GroupType.CORE] == 0
+        assert results.total_counts[GroupType.REGRESSION] == 0
+        assert results.total_counts[GroupType.ERROR] == 0
+
+    def test_run_does_not_backfill_error_when_inventory_missing(
+        self,
+        mock_problem_config,
+        mock_checkpoint_config,
+        mock_environment,
+        tmp_path,
+    ):
+        """Infra failures without inventory keep parsed counts and no ERROR backfill."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+
+        submission_path = tmp_path / "submission"
+        submission_path.mkdir()
+        tests_dir = submission_path / WORKSPACE_TEST_DIR
+        tests_dir.mkdir()
+        (tests_dir / "test_checkpoint_1.py").write_text("# test file")
+
+        mock_pytest_result = Mock()
+        mock_pytest_result.exit_code = EXIT_INTERNALERROR
+        mock_pytest_result.stdout = "collected 45 items\n\nINTERNALERROR"
+        mock_pytest_result.stderr = ""
+        mock_pytest_result.elapsed = 1.0
+
+        mock_runtime = MagicMock()
+        mock_runtime.execute.return_value = mock_pytest_result
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value = mock_runtime
+
+        mock_workspace = MagicMock()
+        mock_workspace.working_dir = submission_path
+
+        runner = PytestRunner(
+            problem=mock_problem_config,
+            checkpoint=mock_checkpoint_config,
+            environment=mock_environment,
+            submission_path=submission_path,
+        )
+        mock_session.workspace = mock_workspace
+
+        with (
+            patch(
+                "slop_code.evaluation.pytest_runner.Session"
+            ) as mock_session_cls,
+            patch(
+                "slop_code.evaluation.pytest_runner.resolve_static_assets"
+            ) as mock_resolve,
+            patch.object(runner, "_parse_ctrf_report", return_value=([], None)),
+            patch.object(
+                runner, "_parse_pytest_json_report", return_value=None
+            ),
+        ):
+            mock_session_cls.from_environment_spec.return_value = mock_session
+            mock_resolve.return_value = {}
+            results = runner.run()
+
+        assert results.infrastructure_failure is True
+        assert results.pytest_collected == 45
+        assert len(results.tests) == 0
+        assert results.total_counts[GroupType.CORE] == 0
+        assert results.total_counts[GroupType.FUNCTIONALITY] == 0
+        assert results.total_counts[GroupType.REGRESSION] == 0
+        assert results.total_counts[GroupType.ERROR] == 0
+
     def test_run_with_parametrized_tests(
         self,
         mock_problem_config,
@@ -1515,7 +1902,9 @@ def docker_available() -> bool:
         client = docker.from_env()
         client.ping()
         return True
-    except Exception:
+    except (ImportError, AttributeError):
+        return False
+    except docker.errors.DockerException:
         return False
 
 
@@ -1904,7 +2293,7 @@ class TestTestMaterialization:
         workspace_path.mkdir()
 
         # Record initial submission state
-        initial_files = set(f.name for f in submission_path.iterdir())
+        initial_files = {f.name for f in submission_path.iterdir()}
 
         mock_problem_config.path = problem_path
 
@@ -1919,7 +2308,7 @@ class TestTestMaterialization:
         runner._copy_tests_from_problem(workspace_path)
 
         # Verify submission_path was not modified
-        final_files = set(f.name for f in submission_path.iterdir())
+        final_files = {f.name for f in submission_path.iterdir()}
         assert initial_files == final_files, (
             f"Submission directory was modified: "
             f"initial={initial_files}, final={final_files}"

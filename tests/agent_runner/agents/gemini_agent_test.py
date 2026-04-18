@@ -281,8 +281,8 @@ class TestGeminiAgent:
         command = agent._build_command("do something")
 
         assert command[0] == "gemini"
-        assert "-p" in command
-        assert "-y" in command  # YOLO mode
+        assert any(arg.startswith("--prompt=") for arg in command)
+        assert "--yolo" in command  # YOLO mode
         assert "--output-format" in command
         assert "stream-json" in command
 
@@ -304,9 +304,30 @@ class TestGeminiAgent:
 
         command = agent._build_command("do something")
 
-        assert "-m" in command
-        model_idx = command.index("-m")
-        assert command[model_idx + 1] == "gemini-2.5-flash"
+        assert "--model=gemini-2.5-flash" in command
+
+    def test_build_command_strips_provider_prefix_from_model(
+        self, mock_cost_limits, mock_pricing
+    ):
+        """_build_command strips provider prefix to match Harbor Gemini CLI."""
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="google/gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+        )
+
+        command = agent._build_command("do something")
+
+        assert "--model=gemini-2.5-flash" in command
+        assert "--model=google/gemini-2.5-flash" not in command
 
     def test_build_command_with_extra_args(
         self, mock_cost_limits, mock_pricing
@@ -330,6 +351,31 @@ class TestGeminiAgent:
 
         assert "--custom-flag" in command
         assert "value" in command
+
+    def test_prepare_runtime_execution_passes_google_auth_env_vars(
+        self, mock_cost_limits, mock_pricing, monkeypatch
+    ):
+        """_prepare_runtime_execution forwards Harbor auth env vars."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+        )
+
+        _, env_overrides = agent._prepare_runtime_execution("do something")
+        assert env_overrides["GOOGLE_API_KEY"] == "google-key"
+        assert env_overrides["GOOGLE_CLOUD_PROJECT"] == "test-project"
 
     def test_save_artifacts_writes_files(
         self, tmp_path, mock_cost_limits, mock_pricing
@@ -441,6 +487,27 @@ class TestGeminiAgentParseLine:
         # Cost calculation: (1000 * 0.15 + 50 * 0.60) / 1_000_000
         expected_cost = (1000 * 0.15 + 50 * 0.60) / 1_000_000
         assert abs(cost - expected_cost) < 0.0001
+
+    def test_parse_line_result_counts_thought_tool_and_cache_tokens(
+        self, mock_pricing
+    ):
+        """Gemini completion usage includes output, thoughts, and tool tokens."""
+        line = (
+            '{"type":"result","status":"success",'
+            '"stats":{"input":1000,"output":50,"thoughts":25,'
+            '"tool":10,"cached":200}}'
+        )
+
+        cost, tokens, payload = GeminiAgent.parse_line(line, mock_pricing)
+
+        assert cost is not None
+        assert tokens is not None
+        assert payload is not None
+        assert tokens.input == 1000
+        assert tokens.output == 85
+        assert tokens.cache_read == 200
+        expected_cost = (1000 * 0.15 + 85 * 0.60 + 200 * 0.0375) / 1_000_000
+        assert cost == pytest.approx(expected_cost)
 
     def test_parse_line_result_with_no_stats(self, mock_pricing):
         """parse_line handles result with missing stats."""

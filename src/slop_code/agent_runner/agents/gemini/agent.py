@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import shlex
 import shutil
 import tempfile
@@ -34,6 +35,15 @@ from slop_code.execution import StreamingRuntime
 from slop_code.logging import get_logger
 
 log = get_logger(__name__)
+
+_GOOGLE_AUTH_ENV_VARS = (
+    "GEMINI_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_API_KEY",
+)
 
 
 class GeminiConfig(AgentConfigBase):
@@ -80,7 +90,7 @@ class GeminiAgent(Agent):
     def __init__(
         self,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str,
         # From base config
         cost_limits: AgentCostLimits,
@@ -143,7 +153,7 @@ class GeminiAgent(Agent):
         model: ModelDefinition,
         credential: ProviderCredential,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str | None,
         thinking_preset: ThinkingPreset | None = None,
         thinking_max_tokens: int | None = None,
@@ -203,15 +213,21 @@ class GeminiAgent(Agent):
             return None, None, payload
 
         stats = payload.get("stats") or {}
-        input_tokens = stats.get("input_tokens", 0)
-        output_tokens = stats.get("output_tokens", 0)
+        input_tokens = stats.get("input_tokens", stats.get("input", 0))
+        output_tokens = stats.get("output_tokens", stats.get("output", 0))
+        thoughts_tokens = stats.get("thoughts_tokens", stats.get("thoughts", 0))
+        tool_tokens = stats.get("tool_tokens", stats.get("tool", 0))
+        cache_read_tokens = stats.get(
+            "cache_read_tokens",
+            stats.get("cached_tokens", stats.get("cached", 0)),
+        )
 
         tokens = TokenUsage(
             input=input_tokens,
-            output=output_tokens,
-            cache_read=0,
+            output=output_tokens + thoughts_tokens + tool_tokens,
+            cache_read=cache_read_tokens,
             cache_write=0,
-            reasoning=0,
+            reasoning=thoughts_tokens,
         )
 
         cost = pricing.get_cost(tokens) if pricing else 0.0
@@ -235,13 +251,13 @@ class GeminiAgent(Agent):
             raise AgentError("GeminiAgent has not been set up with a runtime")
         return self._runtime
 
-    def _get_volumes(self) -> dict[str, dict[str, str]]:
+    def _get_volumes(self) -> dict[str, dict[str, str] | str]:
         """Get volume mounts for the Gemini agent.
 
         Creates a temporary directory for settings.json since Gemini modifies
         it during runtime, while keeping oauth_creds.json read-only.
         """
-        mounts: dict[str, dict[str, str]] = {}
+        mounts: dict[str, dict[str, str] | str] = {}
         gemini_dir = Path(HOME_PATH) / ".gemini"
 
         if self._tmp_dir is None:
@@ -337,11 +353,18 @@ class GeminiAgent(Agent):
 
         if self._session is None:
             raise AgentError("GeminiAgent has not been set up with a session")
-        if isinstance(command, list):
-            command = " ".join(command)
 
-        # Use partial to bind pricing to parse_line
-        parser = functools.partial(self.parse_line, pricing=self.pricing)
+        # Use a typed wrapper for parser to satisfy stream_cli_command signature.
+        # Invalid lines are converted to empty payload dicts and ignored below.
+        parser_partial = functools.partial(
+            self.parse_line, pricing=self.pricing
+        )
+
+        def parser(
+            line: str,
+        ) -> tuple[float | None, TokenUsage | None, dict]:
+            cost, tokens, payload = parser_partial(line)
+            return cost, tokens, payload or {}
 
         total_cost = 0.0
         total_tokens = TokenUsage()
@@ -371,11 +394,11 @@ class GeminiAgent(Agent):
                 total_tokens = total_tokens + tokens
 
             # Collect raw payload for artifact saving
-            if payload is not None:
+            if payload:
                 self._payloads.append(payload)
 
             # Count steps: tool_use + the last assistant message before each tool_use
-            if payload is not None:
+            if payload:
                 event_type = payload.get("type")
                 if (
                     event_type == "message"
@@ -401,6 +424,8 @@ class GeminiAgent(Agent):
             usage_totals={
                 "input_tokens": total_tokens.input,
                 "output_tokens": total_tokens.output,
+                "cached_input_tokens": total_tokens.cache_read,
+                "reasoning_tokens": total_tokens.reasoning,
                 "total_tokens": total_tokens.input + total_tokens.output,
                 "steps": step_count,
             },
@@ -413,10 +438,14 @@ class GeminiAgent(Agent):
         totals = totals or {}
         input_tokens = int(totals.get("input_tokens") or 0)
         output_tokens = int(totals.get("output_tokens") or 0)
+        cache_read_tokens = int(totals.get("cached_input_tokens") or 0)
+        reasoning_tokens = int(totals.get("reasoning_tokens") or 0)
 
         tokens = TokenUsage(
             input=input_tokens,
             output=output_tokens,
+            cache_read=cache_read_tokens,
+            reasoning=reasoning_tokens,
         )
 
         cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
@@ -435,9 +464,14 @@ class GeminiAgent(Agent):
     def _prepare_runtime_execution(
         self,
         task: str,
-    ) -> tuple[list[str], dict[str, str]]:
+    ) -> tuple[str, dict[str, str]]:
         """Prepare command and environment overrides for runtime execution."""
         env_overrides = {key: str(value) for key, value in self.env.items()}
+
+        for env_key in _GOOGLE_AUTH_ENV_VARS:
+            env_value = os.environ.get(env_key)
+            if env_value:
+                env_overrides[env_key] = env_value
 
         # Handle env_var type credentials
         if (
@@ -449,21 +483,22 @@ class GeminiAgent(Agent):
             )
 
         command = self._build_command(task)
-        return command, env_overrides
+        return " ".join(command), env_overrides
 
     def _build_command(self, prompt: str) -> list[str]:
         """Build CLI command arguments for Gemini."""
+        prompt_arg = shlex.quote(prompt)
         command = [
             self.binary,
-            "-p",
-            shlex.quote(prompt),
-            "-y",  # YOLO mode - auto-approve tool calls
+            f"--prompt={prompt_arg}",
+            "--yolo",  # Auto-approve tool calls
             "--output-format",
             "stream-json",
         ]
 
         if self.model:
-            command.extend(["-m", self.model])
+            model_name = self.model.split("/")[-1]
+            command.append(f"--model={model_name}")
 
         command.extend(self.extra_args)
         return command

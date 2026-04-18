@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,9 +15,16 @@ from slop_code.agent_runner.agents.utils import HOME_PATH
 from slop_code.agent_runner.credentials import CredentialType
 from slop_code.agent_runner.credentials import ProviderCredential
 from slop_code.agent_runner.models import AgentCostLimits
+from slop_code.agent_runner.models import AgentError
 from slop_code.common.llms import APIPricing
+from slop_code.common.llms import ModelCatalog
+from slop_code.common.llms import ModelDefinition
+from slop_code.common.llms import TokenUsage
 from slop_code.execution import DockerConfig
 from slop_code.execution import DockerEnvironmentSpec
+from slop_code.execution import Session
+from slop_code.execution import StreamingRuntime
+from slop_code.execution.runtime import RuntimeResult
 
 
 @pytest.fixture
@@ -47,6 +55,18 @@ def mock_credential():
         value="test-api-key",
         source="ANTHROPIC_API_KEY",
         destination_key="ANTHROPIC_API_KEY",
+        credential_type=CredentialType.ENV_VAR,
+    )
+
+
+@pytest.fixture
+def openrouter_credential():
+    """Credential for OpenRouter-backed Claude Code runs."""
+    return ProviderCredential(
+        provider="openrouter",
+        value="test-openrouter-key",
+        source="OPENROUTER_API_KEY",
+        destination_key="OPENROUTER_API_KEY",
         credential_type=CredentialType.ENV_VAR,
     )
 
@@ -82,8 +102,13 @@ class FakeSession:
     last_spawn_mounts: dict[str, dict[str, str] | str] | None = None
 
     def spawn(self, **_: object) -> FakeRuntime:
-        self.last_spawn_env_vars = dict(_.get("env_vars") or {})
-        self.last_spawn_mounts = dict(_.get("mounts") or {})
+        env_vars = cast("dict[str, str] | None", _.get("env_vars"))
+        mounts = cast(
+            "dict[str, dict[str, str] | str] | None",
+            _.get("mounts"),
+        )
+        self.last_spawn_env_vars = dict(env_vars or {})
+        self.last_spawn_mounts = dict(mounts or {})
         return self.runtime
 
 
@@ -93,7 +118,7 @@ class TestClaudeCodeConfig:
     def test_version_is_required(self, mock_cost_limits):
         """Version field is required for docker template."""
         with pytest.raises(Exception):  # Pydantic validation error
-            ClaudeCodeConfig(
+            ClaudeCodeConfig(  # type: ignore[missing-argument]
                 type="claude_code",
                 cost_limits=mock_cost_limits,
                 # Missing version
@@ -132,7 +157,7 @@ class TestClaudeCodeAgent:
         mock_pricing,
         mock_credential,
     ):
-        """save_artifacts copies full workspace from trace dir."""
+        """save_artifacts copies only Claude's mounted workspace project."""
         runtime = FakeRuntime()
         spec = DockerEnvironmentSpec(
             name="test",
@@ -167,25 +192,31 @@ class TestClaudeCodeAgent:
             max_output_tokens=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         assert agent._trace_dir is not None
         trace_dir = agent._trace_dir
         trace_dir.mkdir(parents=True, exist_ok=True)
-        nested = trace_dir / "proj" / "trace.jsonl"
+        nested = trace_dir / "projects" / "-workspace" / "trace.jsonl"
         nested.parent.mkdir(parents=True, exist_ok=True)
         nested.write_text('{"type":"system","subtype":"init"}\n')
-        other_file = trace_dir / "data.txt"
-        other_file.write_text("hello")
+        root_file = trace_dir / "settings.json"
+        root_file.write_text("{}")
+        other_project = trace_dir / "projects" / "other" / "trace.jsonl"
+        other_project.parent.mkdir(parents=True, exist_ok=True)
+        other_project.write_text('{"type":"system","subtype":"other"}\n')
 
         output_dir = tmp_path / "artifacts"
         agent.save_artifacts(output_dir)
 
-        saved_trace = output_dir / "workspace" / "proj" / "trace.jsonl"
+        saved_trace = (
+            output_dir / "workspace" / "projects" / "-workspace" / "trace.jsonl"
+        )
         assert saved_trace.exists()
         assert saved_trace.read_text() == nested.read_text()
-        saved_other = output_dir / "workspace" / "data.txt"
-        assert saved_other.exists()
-        assert saved_other.read_text() == "hello"
+        assert not (output_dir / "workspace" / "settings.json").exists()
+        assert not (
+            output_dir / "workspace" / "projects" / "other" / "trace.jsonl"
+        ).exists()
 
     def test_setup_uses_default_home_for_docker(
         self,
@@ -229,7 +260,7 @@ class TestClaudeCodeAgent:
             max_output_tokens=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         assert session.last_spawn_env_vars is not None
         assert session.last_spawn_env_vars.get("HOME") == HOME_PATH
@@ -273,11 +304,14 @@ class TestClaudeCodeAgent:
         logger = FakeLogger()
         agent.log = logger
 
-        trace_dir = tmp_path / "claude_projects"
+        trace_dir = tmp_path / "claude_home"
         trace_dir.mkdir(parents=True, exist_ok=True)
-        nested = trace_dir / "proj" / "trace.jsonl"
+        nested = trace_dir / "projects" / "-workspace" / "trace.jsonl"
         nested.parent.mkdir(parents=True, exist_ok=True)
         nested.write_text('{"type":"system","subtype":"init"}\n')
+        unrelated = trace_dir / "projects" / "other" / "trace.jsonl"
+        unrelated.parent.mkdir(parents=True, exist_ok=True)
+        unrelated.write_text('{"type":"system","subtype":"other"}\n')
         agent._trace_dir = trace_dir
 
         output_dir = tmp_path / "artifacts"
@@ -288,6 +322,78 @@ class TestClaudeCodeAgent:
             and kwargs.get("saved") == 1
             for event, kwargs in logger.debug_calls
         )
+
+    def test_save_artifacts_only_copies_new_claude_trace_files_between_checkpoints(
+        self,
+        tmp_path,
+        mock_cost_limits,
+        mock_pricing,
+        mock_credential,
+    ):
+        """Later checkpoints should only save newly created Claude trace files."""
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=mock_credential,
+            binary="claude",
+            model="claude-test",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+
+        trace_dir = tmp_path / "claude_home"
+        first_trace = trace_dir / "projects" / "-workspace" / "trace1.jsonl"
+        first_trace.parent.mkdir(parents=True, exist_ok=True)
+        first_trace.write_text('{"type":"system","subtype":"init"}\n')
+        agent._trace_dir = trace_dir
+
+        first_output = tmp_path / "checkpoint_1"
+        agent._save_claude_traces(first_output)
+        assert (
+            first_output
+            / "workspace"
+            / "projects"
+            / "-workspace"
+            / "trace1.jsonl"
+        ).exists()
+
+        agent.reset()
+
+        second_trace = trace_dir / "projects" / "-workspace" / "trace2.jsonl"
+        second_trace.write_text('{"type":"assistant","subtype":"turn"}\n')
+
+        second_output = tmp_path / "checkpoint_2"
+        agent._save_claude_traces(second_output)
+
+        assert not (
+            second_output
+            / "workspace"
+            / "projects"
+            / "-workspace"
+            / "trace1.jsonl"
+        ).exists()
+        saved_new_trace = (
+            second_output
+            / "workspace"
+            / "projects"
+            / "-workspace"
+            / "trace2.jsonl"
+        )
+        assert saved_new_trace.exists()
+        assert saved_new_trace.read_text() == second_trace.read_text()
 
     def test_prepare_mounts_includes_max_output_tokens_in_settings(
         self,
@@ -331,7 +437,7 @@ class TestClaudeCodeAgent:
             max_output_tokens=64000,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         # Verify the settings file was written with max_output_tokens
         assert agent._settings_path is not None
@@ -384,7 +490,7 @@ class TestClaudeCodeAgent:
             max_output_tokens=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         # Verify the settings file was written without max_output_tokens
         assert agent._settings_path is not None
@@ -436,11 +542,144 @@ class TestClaudeCodeAgent:
             max_output_tokens=64000,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         # Original settings should not be mutated
         assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in original_settings
         assert original_settings == {"existingSetting": "value"}
+
+    def test_prepare_mounts_writes_openrouter_env_to_settings(
+        self,
+        tmp_path,
+        mock_cost_limits,
+        mock_pricing,
+        openrouter_credential,
+    ):
+        """OpenRouter auth should be written into Claude settings env."""
+        runtime = FakeRuntime()
+        spec = DockerEnvironmentSpec(
+            name="test",
+            docker=DockerConfig(image="test-image"),
+        )
+        session = FakeSession(
+            runtime=runtime,
+            working_dir=tmp_path,
+            spec=spec,
+        )
+
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=openrouter_credential,
+            binary="claude",
+            model="z-ai/glm-4.7",
+            timeout=None,
+            settings={"existingSetting": "value"},
+            env={"ANTHROPIC_DEFAULT_SONNET_MODEL": "z-ai/glm-4.7"},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url="https://openrouter.ai/api",
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+
+        agent.setup(cast("Session", session))
+
+        assert agent._settings_path is not None
+        settings_content = json.loads(agent._settings_path.read_text())
+        settings_env = settings_content["env"]
+        assert settings_env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+        assert (
+            settings_env["ANTHROPIC_AUTH_TOKEN"] == openrouter_credential.value
+        )
+        assert settings_env["ANTHROPIC_API_KEY"] == ""
+        assert settings_env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "z-ai/glm-4.7"
+        assert settings_content["existingSetting"] == "value"
+
+    def test_from_config_resolves_openrouter_endpoint_and_model_defaults(
+        self,
+        mock_cost_limits,
+        openrouter_credential,
+    ):
+        """OpenRouter provider override should set endpoint and model slugs."""
+        config = ClaudeCodeConfig(
+            type="claude_code",
+            version="2.0.51",
+            cost_limits=mock_cost_limits,
+        )
+        model = ModelCatalog.get("glm-4.7")
+        assert model is not None
+
+        agent = ClaudeCodeAgent._from_config(
+            config=config,
+            model=model,
+            credential=openrouter_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert isinstance(agent, ClaudeCodeAgent)
+        assert agent.base_url == "https://openrouter.ai/api"
+        assert agent.model == "z-ai/glm-4.7"
+        assert agent.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "z-ai/glm-4.7"
+        assert agent.env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "z-ai/glm-4.7"
+        assert (
+            agent.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "z-ai/glm-4.7-flash"
+        )
+
+    def test_from_config_prefers_provider_specific_env_overrides(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        openrouter_credential,
+    ):
+        """Provider-specific Claude env overrides should win over defaults."""
+        config = ClaudeCodeConfig(
+            type="claude_code",
+            version="2.0.51",
+            cost_limits=mock_cost_limits,
+        )
+        model = ModelDefinition(
+            internal_name="glm-4.7",
+            provider="zhipu",
+            pricing=mock_pricing,
+            provider_slugs={"openrouter": "z-ai/glm-4.7"},
+            agent_specific={
+                "claude_code": {
+                    "endpoint": "anthropic",
+                    "env_overrides": {
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.7",
+                    },
+                    "provider_env_overrides": {
+                        "openrouter": {
+                            "ANTHROPIC_DEFAULT_OPUS_MODEL": "z-ai/glm-5",
+                            "ANTHROPIC_DEFAULT_SONNET_MODEL": "z-ai/glm-4.7",
+                        }
+                    },
+                }
+            },
+        )
+
+        agent = ClaudeCodeAgent._from_config(
+            config=config,
+            model=model,
+            credential=openrouter_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert isinstance(agent, ClaudeCodeAgent)
+        assert agent.env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "z-ai/glm-5"
+        assert agent.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "z-ai/glm-4.7"
 
 
 class TestParseLineErrorHandling:
@@ -484,6 +723,188 @@ class TestParseLineErrorHandling:
         line = json.dumps(payload)
         cost, tokens, parsed = ClaudeCodeAgent.parse_line(line)
         assert parsed["is_error"] is True
+
+    def test_parse_line_treats_null_cache_usage_as_zero(self):
+        """parse_line should coerce null cache token counts to zero."""
+        payload = {
+            "type": "result",
+            "total_cost_usd": 0.5,
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+            },
+        }
+
+        cost, tokens, parsed = ClaudeCodeAgent.parse_line(json.dumps(payload))
+
+        assert cost == 0.5
+        assert tokens is not None
+        assert tokens.cache_read == 0
+        assert tokens.cache_write == 0
+        assert parsed == payload
+
+    def test_openrouter_result_uses_configured_pricing_over_cli_cost(
+        self,
+        mock_cost_limits,
+        openrouter_credential,
+    ):
+        """OpenRouter Claude Code runs should use configured model pricing."""
+        pricing = APIPricing(
+            input=0.3,
+            output=1.2,
+            cache_read=0.06,
+            cache_write=0.375,
+        )
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=pricing,
+            credential=openrouter_credential,
+            binary="claude",
+            model="minimax-m2.7",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+        payload = {
+            "type": "result",
+            "total_cost_usd": 5.086003799999994,
+            "usage": {
+                "input_tokens": 243496,
+                "output_tokens": 89876,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 7889303,
+            },
+            "modelUsage": {
+                "minimax/minimax-m2.7": {
+                    "inputTokens": 319912,
+                    "outputTokens": 117245,
+                    "cacheReadInputTokens": 7891976,
+                    "cacheCreationInputTokens": 0,
+                    "costUSD": 5.086003799999994,
+                }
+            },
+        }
+
+        cost, tokens = agent._resolve_result_usage(
+            payload=payload,
+            reported_cost=cast("float", payload["total_cost_usd"]),
+            reported_tokens=ClaudeCodeAgent.parse_line(json.dumps(payload))[1],
+        )
+
+        assert cost == pytest.approx(0.61421256)
+        assert tokens is not None
+        assert tokens.input == 319912
+        assert tokens.output == 117245
+        assert tokens.cache_read == 7891976
+        assert tokens.cache_write == 0
+
+    def test_final_result_replaces_streamed_net_tokens(
+        self,
+        monkeypatch,
+        mock_cost_limits,
+        mock_pricing,
+        mock_credential,
+    ):
+        """Final result usage should not be added on top of streamed usage."""
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=mock_credential,
+            binary="claude",
+            model="claude-test",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+        agent._runtime = cast("StreamingRuntime", FakeRuntime())  # noqa: SLF001
+
+        streamed_tokens = TokenUsage(
+            input=1,
+            output=10,
+            cache_read=100,
+            cache_write=20,
+        )
+        final_tokens = TokenUsage(
+            input=2,
+            output=30,
+            cache_read=300,
+            cache_write=40,
+        )
+
+        def fake_stream_cli_command(**_: object):
+            yield (
+                None,
+                streamed_tokens,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                },
+            )
+            yield (
+                0.5,
+                final_tokens,
+                {
+                    "type": "result",
+                    "total_cost_usd": 0.5,
+                    "usage": {
+                        "input_tokens": 2,
+                        "output_tokens": 30,
+                        "cache_read_input_tokens": 300,
+                        "cache_creation_input_tokens": 40,
+                    },
+                },
+            )
+            yield RuntimeResult(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                setup_stdout="",
+                setup_stderr="",
+                elapsed=1.0,
+                timed_out=False,
+            )
+
+        monkeypatch.setattr(
+            "slop_code.agent_runner.agents.claude_code.agent.stream_cli_command",
+            fake_stream_cli_command,
+        )
+
+        agent._run("claude", {})  # noqa: SLF001
+
+        assert agent.usage.cost == 0.5
+        assert agent.usage.steps == 1
+        assert agent.usage.current_tokens == final_tokens
+        assert agent.usage.net_tokens == final_tokens
 
     def test_error_before_success_should_fail_run(
         self,
@@ -762,7 +1183,7 @@ class TestBedrockMode:
         _, env = agent._prepare_runtime_execution("do the thing")
 
         assert env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        assert env["AWS_BEARER_TOKEN_BEDROCK"] == "test-bedrock-token"
+        assert env["AWS_BEARER_TOKEN_BEDROCK"] == bedrock_credential.value
         assert env["AWS_REGION"] == "eu-west-1"
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_AUTH_TOKEN" not in env
@@ -886,5 +1307,289 @@ class TestBedrockMode:
 
         assert env["FORCE_AUTO_BACKGROUND_TASKS"] == "1"
         assert env["ENABLE_BACKGROUND_TASKS"] == "1"
+        assert env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "1"
         assert env["DISABLE_AUTOUPDATER"] == "1"
         assert env["DISABLE_NON_ESSENTIAL_MODEL_CALLS"] == "1"
+
+
+class TestFoundryMode:
+    """Tests for Microsoft (Azure) Foundry integration in ClaudeCodeAgent."""
+
+    @pytest.fixture
+    def foundry_credential(self):
+        return ProviderCredential(
+            provider="foundry",
+            value="test-foundry-key",
+            source="ANTHROPIC_FOUNDRY_API_KEY",
+            destination_key="ANTHROPIC_FOUNDRY_API_KEY",
+            credential_type=CredentialType.ENV_VAR,
+        )
+
+    def _make_foundry_agent(
+        self, mock_cost_limits, mock_pricing, foundry_credential
+    ):
+        return ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=foundry_credential,
+            binary="claude",
+            model="claude-sonnet-4-6",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+            foundry=True,
+        )
+
+    def test_foundry_flag_set_from_credential(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-resource")
+        agent = self._make_foundry_agent(
+            mock_cost_limits, mock_pricing, foundry_credential
+        )
+        assert agent._foundry is True
+
+    def test_non_foundry_agent_has_foundry_false(
+        self, mock_cost_limits, mock_pricing, mock_credential
+    ):
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=mock_credential,
+            binary="claude",
+            model="claude-test",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+        assert agent._foundry is False
+
+    def test_foundry_accepts_base_url_instead_of_resource(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_RESOURCE", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_FOUNDRY_BASE_URL",
+            "https://my-resource.services.ai.azure.com/anthropic",
+        )
+        agent = self._make_foundry_agent(
+            mock_cost_limits, mock_pricing, foundry_credential
+        )
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert (
+            env["ANTHROPIC_FOUNDRY_BASE_URL"]
+            == "https://my-resource.services.ai.azure.com/anthropic"
+        )
+        assert "ANTHROPIC_FOUNDRY_RESOURCE" not in env
+
+    def test_foundry_uses_agent_base_url_when_env_unset(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_RESOURCE", raising=False)
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=foundry_credential,
+            binary="claude",
+            model="claude-sonnet-4-6",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url="https://cfg-resource.services.ai.azure.com/anthropic",
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+            foundry=True,
+        )
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert (
+            env["ANTHROPIC_FOUNDRY_BASE_URL"]
+            == "https://cfg-resource.services.ai.azure.com/anthropic"
+        )
+        assert "ANTHROPIC_FOUNDRY_RESOURCE" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_foundry_env_base_url_wins_over_agent_base_url(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.setenv(
+            "ANTHROPIC_FOUNDRY_BASE_URL",
+            "https://env-resource.services.ai.azure.com/anthropic",
+        )
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_RESOURCE", raising=False)
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=foundry_credential,
+            binary="claude",
+            model="claude-sonnet-4-6",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url="https://cfg-resource.services.ai.azure.com/anthropic",
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+            foundry=True,
+        )
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert (
+            env["ANTHROPIC_FOUNDRY_BASE_URL"]
+            == "https://env-resource.services.ai.azure.com/anthropic"
+        )
+
+    def test_foundry_requires_resource_or_base_url(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_RESOURCE", raising=False)
+        monkeypatch.delenv("ANTHROPIC_FOUNDRY_BASE_URL", raising=False)
+        agent = self._make_foundry_agent(
+            mock_cost_limits, mock_pricing, foundry_credential
+        )
+        with pytest.raises(AgentError, match="ANTHROPIC_FOUNDRY_RESOURCE"):
+            agent._prepare_runtime_execution("task")
+
+    def test_foundry_sets_default_sonnet_and_haiku_models(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-resource")
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_OPUS_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_SONNET_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", raising=False)
+        agent = self._make_foundry_agent(
+            mock_cost_limits, mock_pricing, foundry_credential
+        )
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "claude-sonnet-4-6"
+        assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "claude-haiku-4-5"
+        assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in env
+
+    def test_foundry_model_versions_overridable_from_env(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        foundry_credential,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-resource")
+        monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "custom-opus-id")
+        monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "custom-sonnet-id")
+        monkeypatch.setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "custom-haiku-id")
+        agent = self._make_foundry_agent(
+            mock_cost_limits, mock_pricing, foundry_credential
+        )
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "custom-opus-id"
+        assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "custom-sonnet-id"
+        assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "custom-haiku-id"
+
+
+class TestOpenRouterMode:
+    """Tests for OpenRouter-backed Claude Code runs."""
+
+    def test_openrouter_prepare_runtime_sets_anthropic_proxy_env_vars(
+        self,
+        mock_cost_limits,
+        mock_pricing,
+        openrouter_credential,
+    ):
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=openrouter_credential,
+            binary="claude",
+            model="z-ai/glm-5",
+            timeout=None,
+            settings={},
+            env={"ANTHROPIC_DEFAULT_OPUS_MODEL": "z-ai/glm-5"},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url="https://openrouter.ai/api",
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+
+        _, env = agent._prepare_runtime_execution("task")
+
+        assert env["OPENROUTER_API_KEY"] == openrouter_credential.value
+        assert env["ANTHROPIC_AUTH_TOKEN"] == openrouter_credential.value
+        assert env["ANTHROPIC_API_KEY"] == ""
+        assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+        assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "z-ai/glm-5"

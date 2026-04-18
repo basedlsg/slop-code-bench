@@ -26,6 +26,7 @@ from slop_code.entrypoints.evaluation.utils import gather_checkpoint_directories
 from slop_code.entrypoints.evaluation.utils import maybe_update_problem_report
 from slop_code.evaluation import CheckpointConfig
 from slop_code.evaluation import CorrectnessResults
+from slop_code.evaluation import GroupType
 from slop_code.evaluation import ProblemConfig
 from slop_code.evaluation.pytest_runner import run_checkpoint_pytest
 from slop_code.execution import EnvironmentSpec
@@ -237,7 +238,7 @@ def _evaluate_checkpoint_worker(
             )
             save_quality_metrics(save_dir, quality_metrics, file_metrics_list)
             log.debug("Quality metrics calculated despite evaluation failure")
-        except Exception as quality_err:
+        except Exception as quality_err:  # noqa: BLE001
             log.debug(
                 "Failed to calculate quality metrics",
                 error=str(quality_err),
@@ -254,7 +255,7 @@ def _evaluate_checkpoint_worker(
 
 
 def maybe_progress_bar(
-    description: str, num_tasks: int, enabled: bool, console
+    description: str, num_tasks: int, *, enabled: bool, console
 ):
     """
     Creates a small wrapper object around a Rich progress bar.
@@ -278,7 +279,7 @@ def maybe_progress_bar(
     if not enabled:
         # Return a no-op object
         class Dummy:
-            def update(self, current: int):
+            def update(self, current: int, core_pct: str | None = None):
                 pass
 
             def __enter__(self):
@@ -294,12 +295,13 @@ def maybe_progress_bar(
         TextColumn("{task.description}"),
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),
+        TextColumn("Core {task.fields[core_pct]}"),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
     )
     live_progress = Live(progress, console=console, refresh_per_second=2.0)
-    task_id = progress.add_task(description, total=num_tasks)
+    task_id = progress.add_task(description, total=num_tasks, core_pct="0.0%")
 
     @dataclass
     class Bar:
@@ -307,8 +309,11 @@ def maybe_progress_bar(
         live: Live
         task_id: int
 
-        def update(self, current: int):
-            self.progress.update(self.task_id, completed=current)
+        def update(self, current: int, core_pct: str | None = None):
+            update_fields: dict[str, int | str] = {"completed": current}
+            if core_pct is not None:
+                update_fields["core_pct"] = core_pct
+            self.progress.update(self.task_id, **update_fields)
 
         def __enter__(self):
             self.live.__enter__()
@@ -396,12 +401,19 @@ def evaluate(
             console=console,
         ) as bar:
             completed = 0
+            core_passed = 0
+            core_total = 0
             for future in as_completed(futures):
                 eval_result = future.result()
                 completed += 1
-                bar.update(completed)
 
                 if not eval_result.success:
+                    core_pct = (
+                        f"{(100 * core_passed / core_total):.1f}%"
+                        if core_total > 0
+                        else "0.0%"
+                    )
+                    bar.update(completed, core_pct=core_pct)
                     logger.error(
                         "Checkpoint evaluation failed",
                         problem_name=eval_result.problem_name,
@@ -414,6 +426,14 @@ def evaluate(
 
                 successful += 1
                 result = eval_result.result
+                core_passed += result.report.pass_counts.get(GroupType.CORE, 0)
+                core_total += result.report.total_counts.get(GroupType.CORE, 0)
+                core_pct = (
+                    f"{(100 * core_passed / core_total):.1f}%"
+                    if core_total > 0
+                    else "0.0%"
+                )
+                bar.update(completed, core_pct=core_pct)
                 logger.info(
                     "Evaluated checkpoint",
                     problem_name=result.problem_name,

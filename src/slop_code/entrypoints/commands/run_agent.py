@@ -1278,6 +1278,7 @@ def run_agent(
 
     # 9. Handle pre-existing run directory
     requested = list(problem_names_resolved)
+    skipped: list[str] = []
     if run_dir_preexisted:
         if ctx.obj.overwrite:
             typer.echo(
@@ -1385,6 +1386,7 @@ def run_agent(
         config=task_config,
         num_workers=num_workers,
         console=console,
+        completed_problems=skipped,
     )
 
     # 15. Report results

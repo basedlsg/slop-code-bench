@@ -98,6 +98,7 @@ class ProblemProgressRenderer:
         total_evaluated = 0
         total_passed = 0
         total_iso_passed = 0
+        total_core_solved = 0
 
         for _, state in self._state.problems():
             if state.overall_usage:
@@ -109,24 +110,13 @@ class ProblemProgressRenderer:
             total_evaluated += state.total_checkpoints_evaluated
             total_passed += state.checkpoints_passed
             total_iso_passed += state.checkpoints_iso_passed
+            total_core_solved += state.checkpoints_core_solved
 
         # Format elapsed time
         elapsed = datetime.now() - self._start_time
         hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-        # Calculate percentages
-        pct_solved = (
-            (total_passed / total_evaluated * 100)
-            if total_evaluated > 0
-            else 0.0
-        )
-        pct_iso = (
-            (total_iso_passed / total_evaluated * 100)
-            if total_evaluated > 0
-            else 0.0
-        )
 
         # Build layout: output dir on its own line, then stats
         content = Table.grid(padding=(0, 0))
@@ -144,6 +134,7 @@ class ProblemProgressRenderer:
         stats_row.add_column()
         stats_row.add_column()
         stats_row.add_column()
+        stats_row.add_column()
         stats_row.add_row(
             Text.assemble(
                 ("Done: ", "dim"),
@@ -154,10 +145,16 @@ class ProblemProgressRenderer:
                 ("Spend: ", "dim"), (f"${total_cost:.2f}", "bold cyan")
             ),
             Text.assemble(
-                ("Solved: ", "dim"), (f"{pct_solved:.1f}%", "bold green")
+                ("Solved: ", "dim"),
+                (f"{total_passed}/{total_evaluated}", "bold green"),
             ),
             Text.assemble(
-                ("Iso Solved: ", "dim"), (f"{pct_iso:.1f}%", "bold green")
+                ("Iso Solved: ", "dim"),
+                (f"{total_iso_passed}/{total_evaluated}", "bold green"),
+            ),
+            Text.assemble(
+                ("Core Solved: ", "dim"),
+                (f"{total_core_solved}/{total_evaluated}", "bold green"),
             ),
         )
         content.add_row(stats_row)

@@ -171,6 +171,7 @@ class CheckpointEvalResult(BaseModel):
     name: str
     passed: bool
     iso_passed: bool
+    core_passed: bool = False
     pass_rate: float = 0.0
     checkpoint_pass_rate: float = 0.0
 
@@ -268,11 +269,16 @@ class MetricsTracker(BaseModel):
             else 0.0
         )
 
+        core_total = total_counts.get(GroupType.CORE, 0)
+        core_passed_count = pass_counts.get(GroupType.CORE, 0)
+        core_pass_rate = core_passed_count / core_total if core_total > 0 else 0.0
+
         self.checkpoint_results.append(
             CheckpointEvalResult(
                 name=name,
                 passed=math.isclose(pass_rate, 1.0),
                 iso_passed=math.isclose(checkpoint_pass_rate, 1.0),
+                core_passed=math.isclose(core_pass_rate, 1.0),
                 pass_rate=pass_rate,
                 checkpoint_pass_rate=checkpoint_pass_rate,
             )

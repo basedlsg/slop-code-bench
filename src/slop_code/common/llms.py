@@ -17,7 +17,9 @@ from slop_code.logging import get_logger
 if TYPE_CHECKING:
     from slop_code.agent_runner.credentials import EndpointDefinition
 
-ThinkingPreset = tp.Literal["none", "disabled", "low", "medium", "high"]
+ThinkingPreset = tp.Literal[
+    "none", "disabled", "low", "medium", "high", "xhigh"
+]
 
 log = get_logger(__name__)
 
@@ -72,7 +74,8 @@ class APIPricing(BaseModel):
     cache_write: float = 0
 
     def get_cost(self, tokens: TokenUsage) -> float:
-        mil_input = tokens.input / 1_000_000
+        uncached_input_tokens = max(tokens.input - tokens.cache_read, 0)
+        mil_input = uncached_input_tokens / 1_000_000
         mil_output = tokens.output / 1_000_000
         mil_cache_read = tokens.cache_read / 1_000_000
         mil_cache_write = tokens.cache_write / 1_000_000
@@ -109,6 +112,8 @@ class ModelDefinition(BaseModel):
         claude_code:
             base_url: str - Override ANTHROPIC_BASE_URL
             env_overrides: dict[str, str] - Environment variable overrides
+            provider_env_overrides: dict[str, dict[str, str]] - Provider-specific
+                env overrides keyed by provider name (for exact fallback model IDs)
 
         codex:
             reasoning_effort: str - "low" | "medium" | "high"

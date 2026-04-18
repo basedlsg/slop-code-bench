@@ -1,0 +1,24 @@
+internal_name: claude-opus-4-7
+provider: anthropic
+pricing:
+  input: 5
+  output: 25
+  cache_read: 0.5
+  cache_write: 6.25
+aliases:
+  - claude-opus-4.7
+  - opus-4.7
+
+agent_specific:
+  mini_swe:
+    model_name: anthropic/claude-opus-4-7
+    model_class: litellm
+
+  codex:
+    thinking: high
+
+  opencode:
+    provider_name: anthropic
+
+provider_slugs:
+  foundry: claude-opus-4-7

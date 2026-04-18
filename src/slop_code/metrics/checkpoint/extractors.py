@@ -226,25 +226,33 @@ def get_evaluation_metrics(
 
     metrics = _load_json_file(eval_file, checkpoint_dir, "evaluation")
 
-    total_counts = metrics["total_counts"]
-    pass_counts = metrics["pass_counts"]
+    total_counts = metrics.get("total_counts", {})
+    pass_counts = metrics.get("pass_counts", {})
     total_passed = sum(pass_counts.values())
     total_total = sum(total_counts.values())
-    checkpoint_passed = total_passed - pass_counts.get("Regression", 0)
-    checkpoint_total = total_total - total_counts.get("Regression", 0)
+    collected_total = metrics.get("pytest_collected", 0)
+    if total_total == 0 and collected_total:
+        total_total = int(collected_total)
 
-    if "Core" not in total_counts:
-        print(checkpoint_dir)
+    regression_total = total_counts.get("Regression", 0)
+    checkpoint_passed = total_passed - pass_counts.get("Regression", 0)
+    checkpoint_total = total_total - regression_total
+    core_total = total_counts.get("Core", 0)
+    core_passed = pass_counts.get("Core", 0)
 
     return {
-        "strict_pass_rate": total_passed / total_total,
-        "core_pass_rate": pass_counts.get("Core", 0) / total_counts["Core"],
-        "isolated_pass_rate": checkpoint_passed / checkpoint_total,
+        "strict_pass_rate": (
+            total_passed / total_total if total_total > 0 else 0.0
+        ),
+        "core_pass_rate": (core_passed / core_total if core_total > 0 else 0.0),
+        "isolated_pass_rate": (
+            checkpoint_passed / checkpoint_total if checkpoint_total > 0 else 0.0
+        ),
         # Flattened tests
         "total_tests": total_total,
         "passed_tests": total_passed,
-        "core_total": total_counts["Core"],
-        "core_passed": pass_counts.get("Core", 0),
+        "core_total": core_total,
+        "core_passed": core_passed,
         "functionality_total": total_counts.get("Functionality", 0),
         "functionality_passed": pass_counts.get("Functionality", 0),
         "error_total": total_counts.get("Error", 0),

@@ -78,7 +78,7 @@ class CodexAgent(Agent):
     def __init__(
         self,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str,
         # From base config
         cost_limits: AgentCostLimits,
@@ -118,6 +118,7 @@ class CodexAgent(Agent):
         self._runtime: StreamingRuntime | None = None
         self._trace_tmp: tempfile.TemporaryDirectory | None = None
         self._trace_dir: Path | None = None
+        self._saved_trace_paths: set[Path] = set()
 
         # Get auth file from credential if it's a file credential
         self._auth_file: Path | None = None
@@ -138,7 +139,7 @@ class CodexAgent(Agent):
         model: ModelDefinition,
         credential: ProviderCredential,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str | None,
         thinking_preset: ThinkingPreset | None = None,
         thinking_max_tokens: int | None = None,
@@ -190,7 +191,31 @@ class CodexAgent(Agent):
         except json.JSONDecodeError:
             return None, None, None
 
-        # Only turn.completed has usage data
+        if payload.get("type") == "event_msg":
+            event_payload = payload.get("payload")
+            if not isinstance(event_payload, dict):
+                return None, None, payload
+            if event_payload.get("type") != "token_count":
+                return None, None, payload
+            info = event_payload.get("info")
+            if not isinstance(info, dict):
+                return None, None, payload
+            usage = info.get("total_token_usage")
+            if not isinstance(usage, dict):
+                return None, None, payload
+            tokens = TokenUsage(
+                input=int(usage.get("input_tokens") or 0),
+                output=int(usage.get("output_tokens") or 0),
+                cache_read=int(usage.get("cached_input_tokens") or 0),
+                cache_write=0,
+                reasoning=int(usage.get("reasoning_output_tokens") or 0),
+            )
+            raw_cost = info.get("total_cost") or info.get("cost_usd")
+            cost = (
+                float(raw_cost) if isinstance(raw_cost, int | float) else None
+            )
+            return cost, tokens, payload
+
         if payload.get("type") != "turn.completed":
             return None, None, payload
 
@@ -234,7 +259,8 @@ class CodexAgent(Agent):
     ) -> None:
         self._session = session
         self._environment = session.spec
-        mounts: dict[str, dict[str, str]] = {}
+        self._saved_trace_paths = set()
+        mounts: dict[str, dict[str, str] | str] = {}
         if isinstance(session.spec, DockerEnvironmentSpec):
             self._trace_tmp = tempfile.TemporaryDirectory()
             self._trace_dir = Path(self._trace_tmp.name)
@@ -312,20 +338,24 @@ class CodexAgent(Agent):
 
         if self._session is None:
             raise AgentError("CodexAgent has not been set up with a session")
-        if isinstance(command, list):
-            command = " ".join(command)
+        command_str = " ".join(command)
 
         # Use partial to bind pricing to parse_line
-        parser = functools.partial(self.parse_line, pricing=self.pricing)
+        parser = tp.cast(
+            "tp.Callable[[str], tuple[float | None, TokenUsage | None, dict]]",
+            functools.partial(self.parse_line, pricing=self.pricing),
+        )
 
-        total_cost = 0.0
         total_tokens = TokenUsage()
+        reported_total_tokens: TokenUsage | None = None
+        reported_cost_micros = 0
+        has_reported_cost = False
         step_count = 0
         runtime_result = None
 
         for item in stream_cli_command(
             runtime=self.runtime,
-            command=command,
+            command=command_str,
             parser=parser,
             env=env_overrides,
             timeout=(float(self.timeout) if self.timeout is not None else None),
@@ -337,33 +367,92 @@ class CodexAgent(Agent):
 
             cost, tokens, payload = item
             self.log.debug("Received item", item=item, verbose=True)
-            if cost is not None:
-                total_cost += cost
-            if tokens is not None:
-                total_tokens = total_tokens + tokens
 
             # Count steps from turn.started and item.completed events
             if payload is not None:
                 event_type = payload.get("type")
+                if event_type == "event_msg":
+                    event_payload = payload.get("payload")
+                    if (
+                        isinstance(event_payload, dict)
+                        and event_payload.get("type") == "token_count"
+                    ):
+                        if tokens is not None:
+                            reported_total_tokens = tokens
+                            has_reported_cost = cost is not None
+                            reported_cost_micros = (
+                                int(round(float(cost) * 1_000_000))
+                                if cost is not None
+                                else 0
+                            )
+                        continue
                 if event_type in ("turn.started", "item.completed"):
                     step_count += 1
                     self.usage.steps += 1
 
+            if tokens is not None:
+                total_tokens = total_tokens + tokens
+
         stdout = runtime_result.stdout if runtime_result else ""
         stderr = runtime_result.stderr if runtime_result else ""
+        trace_cost, trace_tokens = self._read_latest_trace_usage()
+        if trace_tokens is not None:
+            reported_total_tokens = trace_tokens
+            if trace_cost is not None:
+                has_reported_cost = True
+                reported_cost_micros = int(round(float(trace_cost) * 1_000_000))
+        final_tokens = reported_total_tokens or total_tokens
 
         return AgentCommandResult(
             result=runtime_result,
             steps=[],
             usage_totals={
-                "input_tokens": total_tokens.input,
-                "output_tokens": total_tokens.output,
-                "cached_input_tokens": total_tokens.cache_read,
-                "total_tokens": total_tokens.input + total_tokens.output,
+                "input_tokens": final_tokens.input,
+                "output_tokens": final_tokens.output,
+                "cached_input_tokens": final_tokens.cache_read,
+                "reasoning_tokens": final_tokens.reasoning,
+                "total_tokens": final_tokens.input + final_tokens.output,
                 "steps": step_count,
+                "reported_cost_present": int(has_reported_cost),
+                "reported_cost_micros": reported_cost_micros,
             },
             stdout=stdout,
             stderr=stderr,
+        )
+
+    def _read_latest_trace_usage(
+        self,
+    ) -> tuple[float | None, TokenUsage | None]:
+        if self._trace_dir is None:
+            return None, None
+
+        latest_cost: float | None = None
+        latest_tokens: TokenUsage | None = None
+        for path in self._new_trace_files():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                cost, tokens, payload = self.parse_line(
+                    line, pricing=self.pricing
+                )
+                if tokens is None or payload is None:
+                    continue
+                if payload.get("type") != "event_msg":
+                    continue
+                event_payload = payload.get("payload")
+                if not isinstance(event_payload, dict):
+                    continue
+                if event_payload.get("type") != "token_count":
+                    continue
+                latest_tokens = tokens
+                latest_cost = cost
+        return latest_cost, latest_tokens
+
+    def _new_trace_files(self) -> list[Path]:
+        if self._trace_dir is None:
+            return []
+        return sorted(
+            path
+            for path in find_jsonl_files(self._trace_dir)
+            if path.relative_to(self._trace_dir) not in self._saved_trace_paths
         )
 
     def _sync_usage(self, totals: dict[str, int]) -> None:
@@ -371,12 +460,19 @@ class CodexAgent(Agent):
         input_tokens = int(totals.get("input_tokens") or 0)
         output_tokens = int(totals.get("output_tokens") or 0)
         cache_read_tokens = int(totals.get("cached_input_tokens") or 0)
+        reasoning_tokens = int(totals.get("reasoning_tokens") or 0)
         tokens = TokenUsage(
             input=input_tokens,
             output=output_tokens,
             cache_read=cache_read_tokens,
+            reasoning=reasoning_tokens,
         )
-        cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
+        if int(totals.get("reported_cost_present") or 0):
+            cost = (
+                float(int(totals.get("reported_cost_micros") or 0)) / 1_000_000
+            )
+        else:
+            cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
         # Update tokens and cost without incrementing steps (already done during streaming)
         self.usage.cost += cost
         self.usage.net_tokens += tokens
@@ -482,12 +578,19 @@ class CodexAgent(Agent):
             self.log.debug("agent.codex.traces.skipped", reason="no_trace_dir")
             return
         jsonl_files = find_jsonl_files(self._trace_dir)
+        new_jsonl_files = [
+            path
+            for path in jsonl_files
+            if path.relative_to(self._trace_dir) not in self._saved_trace_paths
+        ]
         self.log.debug(
             "agent.codex.traces.found",
             trace_dir=str(self._trace_dir),
             files=len(jsonl_files),
         )
-        copied = copy_jsonl_files(jsonl_files, output_dir)
+        copied = copy_jsonl_files(new_jsonl_files, output_dir)
+        for path in new_jsonl_files:
+            self._saved_trace_paths.add(path.relative_to(self._trace_dir))
         self.log.debug(
             "agent.codex.traces.saved",
             output_dir=str(output_dir),
@@ -501,6 +604,7 @@ class CodexAgent(Agent):
             self._trace_tmp.cleanup()
             self._trace_tmp = None
             self._trace_dir = None
+            self._saved_trace_paths = set()
         self.log.debug("agent.codex.cleanup")
 
 

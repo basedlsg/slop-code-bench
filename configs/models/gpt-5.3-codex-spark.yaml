@@ -1,5 +1,7 @@
 internal_name: gpt-5.3-codex-spark
 provider: openai
+provider_slugs:
+  openai-codex: gpt-5.3-codex-spark
 pricing:
   input: 0.25
   output: 2.00

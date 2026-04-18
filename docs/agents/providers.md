@@ -1,6 +1,6 @@
 ---
 version: 1.0
-last_updated: 2025-12-10
+last_updated: 2026-04-17
 ---
 
 # Providers Guide
@@ -24,6 +24,11 @@ Providers define where credentials come from for each API service. They map prov
 | `groq` | `GROQ_API_KEY` | Groq API key |
 | `cohere` | `COHERE_API_KEY` | Cohere API key |
 | `xai` | `XAI_API_KEY` | xAI API key for Grok models |
+| `cerebras` | `CEREBRAS_API_KEY` | Cerebras API key |
+| `zai` | `ZAI_API_KEY` | ZAI API key |
+| `ai_gateway` | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key |
+| `vercel-ai-gateway` | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key |
+| `minimax` | `MINIMAX_API_KEY` | MiniMax API key |
 | `moonshot` | `MOONSHOT_API_KEY` | Moonshot AI API key for Kimi models |
 | `claude_code_oauth` | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token |
 
@@ -70,6 +75,19 @@ codex auth login
 ```
 
 File-based credentials are read once and cached.
+
+## PI Provider Notes
+
+For `pi` agent runs, SCB provider names are mapped to PI provider names at agent construction time. Key mappings:
+
+- `codex_auth -> openai-codex`
+- `bedrock -> amazon-bedrock`
+- `zhipu`/`zhipu-coding-plan`/`zai -> zai`
+- `ai_gateway`/`vercel-ai-gateway -> vercel-ai-gateway`
+
+If an SCB provider has no PI mapping, the run fails early with a setup error.
+
+For `codex_auth`, SCB converts `~/.codex/auth.json` into a temporary PI auth file (`openai-codex`) under a per-run temp directory and sets `PI_CODING_AGENT_DIR` to that temp path.
 
 ## Configuration File
 

@@ -30,10 +30,9 @@ class FakeRuntime:
         self,
         command: str,
         env: dict,
-        stdin: str | list[str] | None,
         timeout: float | None,
     ) -> Iterable[RuntimeEvent]:
-        self.last_stream_args = ((command, env, stdin, timeout), {})
+        self.last_stream_args = ((command, env, timeout), {})
         yield from self.events
 
     def cleanup(self) -> None:
@@ -49,8 +48,12 @@ class FakeSession:
     working_dir: str
 
     spec: object | None = None
+    spawn_kwargs: dict[str, object] | None = None
 
-    def spawn(self, **_: object) -> FakeRuntime:  # pragma: no cover - trivial
+    def spawn(
+        self, **kwargs: object
+    ) -> FakeRuntime:  # pragma: no cover - trivial
+        self.spawn_kwargs = kwargs
         return self.runtime
 
 
@@ -129,6 +132,128 @@ def _runtime_events_from_stdout_chunks(
     return events
 
 
+class TestInjectThinkingConfig:
+    """Tests for _inject_thinking_config and _make_opencode_config."""
+
+    def _make_bare_agent(self, tmp_path, **overrides):
+        defaults = dict(
+            problem_name="test",
+            verbose=False,
+            cost_limits=AgentCostLimits(
+                step_limit=0, cost_limit=100.0, net_cost_limit=200.0
+            ),
+            pricing=None,
+            credential=None,
+            model_id="some-org/some-model",
+            provider="openrouter",
+            opencode_config={},
+            env={},
+            thinking=None,
+        )
+        defaults.update(overrides)
+        agent = OpenCodeAgent(**defaults)
+        # Set up tmp_dir manually so _make_opencode_config works
+        import tempfile
+
+        agent._tmp_dir = tempfile.TemporaryDirectory(dir=str(tmp_path))
+        return agent
+
+    def test_openrouter_injects_at_provider_model_level(self, tmp_path):
+        agent = self._make_bare_agent(
+            tmp_path,
+            provider="openrouter",
+            model_id="moonshotai/kimi-k2-thinking",
+            thinking="high",
+        )
+        agent._make_opencode_config()
+
+        cfg = agent.open_code_config
+        model_opts = cfg["provider"]["openrouter"]["models"][
+            "moonshotai/kimi-k2-thinking"
+        ]["options"]
+        assert model_opts["reasoningEffort"] == "high"
+        assert "agent" not in cfg
+
+    def test_non_openrouter_uses_agent_build(self, tmp_path):
+        agent = self._make_bare_agent(
+            tmp_path,
+            provider="anthropic",
+            thinking="medium",
+        )
+        agent._make_opencode_config()
+
+        cfg = agent.open_code_config
+        assert cfg["agent"]["build"]["reasonEffort"] == "medium"
+        assert "provider" not in cfg
+
+    def test_existing_config_takes_precedence(self, tmp_path):
+        agent = self._make_bare_agent(
+            tmp_path,
+            provider="openrouter",
+            model_id="some-org/some-model",
+            thinking="low",
+            opencode_config={
+                "provider": {
+                    "openrouter": {
+                        "models": {
+                            "some-org/some-model": {
+                                "options": {
+                                    "thinking": {
+                                        "type": "enabled",
+                                        "budgetTokens": 16000,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        agent._make_opencode_config()
+
+        opts = agent.open_code_config["provider"]["openrouter"]["models"][
+            "some-org/some-model"
+        ]["options"]
+        # Explicit thinking config preserved
+        assert opts["thinking"] == {
+            "type": "enabled",
+            "budgetTokens": 16000,
+        }
+        # Auto-injected reasoningEffort also present (deep merge adds it)
+        assert opts["reasoningEffort"] == "low"
+
+    def test_no_injection_when_thinking_is_none(self, tmp_path):
+        agent = self._make_bare_agent(
+            tmp_path,
+            provider="openrouter",
+            thinking=None,
+        )
+        agent._make_opencode_config()
+
+        cfg = agent.open_code_config
+        assert "provider" not in cfg
+        assert "agent" not in cfg
+
+    def test_does_not_overwrite_existing_agent_config(self, tmp_path):
+        agent = self._make_bare_agent(
+            tmp_path,
+            provider="anthropic",
+            thinking="high",
+            opencode_config={
+                "agent": {
+                    "build": {"someKey": "value"},
+                    "maxSteps": 200,
+                }
+            },
+        )
+        agent._make_opencode_config()
+
+        cfg = agent.open_code_config
+        assert cfg["agent"]["build"]["reasonEffort"] == "high"
+        assert cfg["agent"]["build"]["someKey"] == "value"
+        assert cfg["agent"]["maxSteps"] == 200
+
+
 def test_run_collects_messages_and_updates_usage(make_agent):
     agent, runtime = make_agent()
 
@@ -172,10 +297,7 @@ def test_run_collects_messages_and_updates_usage(make_agent):
     assert messages[2] == final_step
 
     assert agent.usage.steps == 2
-    expected_cost = sum(
-        agent.pricing.get_cost(_token_usage_from_part(step["part"]))
-        for step in (first_step, final_step)
-    )
+    expected_cost = first_step["part"]["cost"] + final_step["part"]["cost"]
     assert agent.usage.cost == pytest.approx(expected_cost)
     assert (
         agent.usage.current_tokens.input
@@ -191,6 +313,26 @@ def test_run_collects_messages_and_updates_usage(make_agent):
         == final_step["part"]["tokens"]["cache"]["read"]
     )
     assert agent.continue_on_run is False
+
+
+def test_build_command_matches_harbor_shape(make_agent):
+    agent, _ = make_agent()
+
+    command = agent._build_opencode_command("build something cool")
+
+    assert command == (
+        "opencode --model=zai-coding-plan/glm-4.6 run --format=json "
+        "--thinking --dangerously-skip-permissions -- "
+        "'build something cool'"
+    )
+
+
+def test_setup_sets_fake_vcs_env(make_agent):
+    agent, _ = make_agent()
+
+    assert isinstance(agent.session, FakeSession)
+    assert agent.session.spawn_kwargs is not None
+    assert agent.session.spawn_kwargs["env_vars"]["OPENCODE_FAKE_VCS"] == "git"
 
 
 def test_run_skips_invalid_json_lines(make_agent):
@@ -218,10 +360,7 @@ def test_run_skips_invalid_json_lines(make_agent):
 
     assert messages == [good_step]
     assert agent.usage.steps == 1
-    expected_cost = agent.pricing.get_cost(
-        _token_usage_from_part(good_step["part"])
-    )
-    assert agent.usage.cost == pytest.approx(expected_cost)
+    assert agent.usage.cost == pytest.approx(good_step["part"]["cost"])
 
 
 def test_run_raises_when_finished_event_missing(make_agent):
@@ -250,6 +389,36 @@ def test_run_raises_when_finished_event_missing(make_agent):
 
     with pytest.raises(AgentError):
         agent.run("no finished event")
+
+
+def test_run_raises_on_opencode_error_event(make_agent):
+    agent, runtime = make_agent()
+
+    error_message = {
+        "type": "error",
+        "error": {"message": "Model not found: zai-coding-plan/glm-5.1."},
+    }
+    runtime.events = _runtime_events_from_stdout_chunks(
+        [json.dumps(error_message)]
+    )
+
+    with pytest.raises(AgentError, match="Model not found"):
+        agent.run("trigger error")
+
+
+def test_run_raises_when_no_step_finish_messages(make_agent):
+    agent, runtime = make_agent()
+
+    non_step_message = {
+        "type": "tool_use",
+        "part": {"tool": "read_file"},
+    }
+    runtime.events = _runtime_events_from_stdout_chunks(
+        [json.dumps(non_step_message)]
+    )
+
+    with pytest.raises(AgentError, match="step_finish"):
+        agent.run("no step finish")
 
 
 def test_run_respects_step_limit(make_agent):

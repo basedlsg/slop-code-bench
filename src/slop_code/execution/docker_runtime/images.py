@@ -5,11 +5,10 @@ import io
 import tarfile
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import docker
 from docker.errors import BuildError
 from docker.errors import ImageNotFound
-from docker.models.images import Image
 from jinja2 import Template
 
 from slop_code.execution.assets import ResolvedStaticAsset
@@ -22,6 +21,11 @@ logger = get_logger(__name__)
 
 BASE_IMAGE_TEMPLATE = Path(__file__).parent / "setup_base.docker.j2"
 AGENT_USER = "1000:1000"
+BASE_IMAGE_HASH_LABEL = "io.slop-code.base-image-hash"
+
+if TYPE_CHECKING:
+    import docker
+    from docker.models.images import Image
 
 
 def _make_docker_context(
@@ -77,6 +81,13 @@ def _build_image(
             tag=image_name,
             rm=True,
         )
+    except ImageNotFound:
+        logger.warning(
+            "Docker SDK could not inspect the built image by id; "
+            "falling back to tag lookup",
+            image_name=image_name,
+        )
+        return client.images.get(image_name)
     except BuildError as e:
         logger.error("Failed to build image", image_name=image_name, error=e)
         raise e
@@ -97,10 +108,47 @@ def get_submission_image_name(submission_path: Path) -> str:
     return f"{IMAGE_NAME_PREFIX}:submission-{hashed_submission}-{timestamp}"
 
 
-def make_base_image(environment_spec: DockerEnvironmentSpec) -> str:
+def _render_base_image(environment_spec: DockerEnvironmentSpec) -> str:
     return Template(BASE_IMAGE_TEMPLATE.read_text()).render(
         base_image=environment_spec.docker.image,
         env=environment_spec.environment.env,
+    )
+
+
+def _get_base_image_hash(environment_spec: DockerEnvironmentSpec) -> str:
+    dockerfile = _render_base_image(environment_spec)
+    return hashlib.sha256(dockerfile.encode("utf-8")).hexdigest()[:12]
+
+
+def _get_image_labels(image: Image) -> dict[str, str]:
+    attrs = getattr(image, "attrs", {})
+    if not isinstance(attrs, dict):
+        return {}
+    config = attrs.get("Config")
+    if not isinstance(config, dict):
+        return {}
+    labels = config.get("Labels")
+    if not isinstance(labels, dict):
+        return {}
+    return {str(key): str(value) for key, value in labels.items()}
+
+
+def _base_image_is_current(
+    image: Image,
+    environment_spec: DockerEnvironmentSpec,
+) -> bool:
+    labels = _get_image_labels(image)
+    return (
+        labels.get(BASE_IMAGE_HASH_LABEL)
+        == _get_base_image_hash(environment_spec)
+    )
+
+
+def make_base_image(environment_spec: DockerEnvironmentSpec) -> str:
+    dockerfile = _render_base_image(environment_spec).rstrip()
+    return (
+        f'{dockerfile}\n\nLABEL {BASE_IMAGE_HASH_LABEL}="'
+        f'{_get_base_image_hash(environment_spec)}"\n'
     )
 
 
@@ -146,7 +194,7 @@ def make_submission_docker_file(
 def build_base_image(
     client: docker.DockerClient,
     environment_spec: EnvironmentSpec,
-    force_build: bool = False,
+    force_build: bool = False,  # noqa: FBT001, FBT002
 ) -> Image:
     if not isinstance(environment_spec, DockerEnvironmentSpec):
         raise ValueError("Environment spec must be a DockerEnvironmentSpec")
@@ -160,8 +208,13 @@ def build_base_image(
     found_image = _find_image(image_name, client)
 
     if found_image is not None and not force_build:
-        logger.info("Found image and not forcing build")
-        return found_image
+        if _base_image_is_current(found_image, environment_spec):
+            logger.info("Found current image and not forcing build")
+            return found_image
+        logger.info(
+            "Found stale image; rebuilding",
+            image_name=image_name,
+        )
 
     context_tar = _make_docker_context(make_base_image(environment_spec))
     return _build_image(image_name, client, context_tar)
@@ -188,11 +241,16 @@ def build_submission_image(
     )
     base_image = environment_spec.get_base_image()
 
-    if _find_image(base_image, client) is None:
-        if build_base or force_build:
-            build_base_image(client, environment_spec, force_build=force_build)
-        else:
+    found_base_image = _find_image(base_image, client)
+    if found_base_image is None:
+        if not build_base and not force_build:
             raise ValueError(f"Base image {base_image} does not exist")
+        build_base_image(client, environment_spec, force_build=force_build)
+    elif force_build or not _base_image_is_current(
+        found_base_image, environment_spec
+    ):
+        build_base_image(client, environment_spec, force_build=True)
+
     image_name = use_name or get_submission_image_name(submission_path)
     found_image = _find_image(image_name, client)
     if found_image is not None and not force_build:

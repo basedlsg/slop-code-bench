@@ -1,0 +1,9 @@
+internal_name: composer-2
+provider: cursor
+pricing:
+  input: 0.50
+  output: 2.50
+  cache_read: 0.5
+  cache_write: 0
+aliases:
+  - composer2

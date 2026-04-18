@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import queue
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,14 +15,48 @@ from slop_code import evaluation
 from slop_code.agent_runner import AgentRunSpec
 from slop_code.agent_runner import runner
 from slop_code.agent_runner.agent import Agent
+from slop_code.agent_runner.models import UsageTracker
+from slop_code.agent_runner.reporting import MetricsTracker
 from slop_code.agent_runner.resume import ResumeInfo
 from slop_code.agent_runner.resume import detect_resume_point
 from slop_code.agent_runner.resume import format_resume_summary
+from slop_code.agent_runner.state import AgentStateEnum
+from slop_code.common.llms import TokenUsage
 from slop_code.entrypoints.problem_runner.models import RunTaskConfig
 from slop_code.entrypoints.problem_runner.one_shot import apply_one_shot_mode
 from slop_code.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _send_completed_progress(
+    problem_name: str,
+    resume_info: ResumeInfo,
+    output_path: Path,
+    progress_queue: queue.Queue,
+) -> None:
+    """Send a progress update for a fully-completed problem so live stats are accurate."""
+    now = datetime.now()
+    metrics = MetricsTracker(
+        state=AgentStateEnum.COMPLETED,
+        current_checkpoint=resume_info.completed_checkpoints[-1]
+        if resume_info.completed_checkpoints
+        else "",
+        usage=resume_info.prior_usage.model_copy(deep=True),
+        started=now,
+        checkpoint_started=now,
+    )
+    for checkpoint_name in resume_info.completed_checkpoints:
+        checkpoint_dir = output_path / checkpoint_name
+        eval_result = runner._load_eval_result(checkpoint_dir)
+        metrics.record_checkpoint_result(checkpoint_name, eval_result)
+    dummy_usage = UsageTracker(
+        cost=0.0,
+        steps=0,
+        current_tokens=TokenUsage(),
+        net_tokens=TokenUsage(),
+    )
+    progress_queue.put((problem_name, dummy_usage, metrics))
 
 
 def _delete_invalidated_checkpoints(
@@ -105,6 +140,9 @@ def run_agent_on_problem(
                     "All checkpoints completed, skipping",
                     problem=problem_name,
                     completed=len(resume_info.completed_checkpoints),
+                )
+                _send_completed_progress(
+                    problem_name, resume_info, output_path, progress_queue
                 )
                 return {
                     "summary": {

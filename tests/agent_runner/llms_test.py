@@ -9,6 +9,33 @@ import pytest
 from slop_code.common.llms import APIPricing
 from slop_code.common.llms import ModelCatalog
 from slop_code.common.llms import ModelDefinition
+from slop_code.common.llms import TokenUsage
+
+
+class TestAPIPricing:
+    """Tests for APIPricing calculations."""
+
+    def test_get_cost_subtracts_cache_read_from_input(self) -> None:
+        """Cache reads should be billed at cache rate, not input rate."""
+        pricing = APIPricing(input=1.0, output=2.0, cache_read=0.1)
+        tokens = TokenUsage(input=1_000, output=500, cache_read=200)
+
+        expected_cost = (
+            (800 * pricing.input)
+            + (500 * pricing.output)
+            + (200 * pricing.cache_read)
+        ) / 1_000_000
+
+        assert pricing.get_cost(tokens) == pytest.approx(expected_cost)
+
+    def test_get_cost_clamps_negative_uncached_input_to_zero(self) -> None:
+        """Overreported cache reads should not create negative input cost."""
+        pricing = APIPricing(input=1.0, cache_read=0.1)
+        tokens = TokenUsage(input=100, cache_read=250)
+
+        expected_cost = (250 * pricing.cache_read) / 1_000_000
+
+        assert pricing.get_cost(tokens) == pytest.approx(expected_cost)
 
 
 class TestModelDefinition:
@@ -513,6 +540,7 @@ pricing:
         second_model = ModelCatalog._models.get("model")
 
         assert first_model is second_model
+        assert second_model is not None
         assert second_model.provider == "openai"  # Not modified
 
     def test_get_triggers_ensure_loaded(self, tmp_path: Path, monkeypatch):
@@ -628,6 +656,19 @@ class TestYAMLLoadedModels:
         assert claude_code_endpoint.api_base == "https://api.z.ai/api/anthropic"
         assert claude_code_endpoint.api_format == "anthropic"
 
+    def test_glm_openrouter_endpoint_resolution_for_claude_code(self):
+        """Claude Code should resolve OpenRouter's Anthropic endpoint."""
+        model = ModelCatalog.get("glm-4.7")
+        assert model is not None
+
+        endpoint = model.get_agent_endpoint(
+            "claude_code", provider_override="openrouter"
+        )
+
+        assert endpoint is not None
+        assert endpoint.api_base == "https://openrouter.ai/api"
+        assert endpoint.api_format == "anthropic"
+
     def test_glm_has_provider_slugs(self):
         """Test that GLM-4.6 has provider_slugs for openrouter."""
         model = ModelCatalog.get("glm-4.6")
@@ -639,3 +680,68 @@ class TestYAMLLoadedModels:
         # get_model_slug should return appropriate values
         assert model.get_model_slug("openrouter") == "z-ai/glm-4.6"
         assert model.get_model_slug() == "glm-4.6"
+
+    @pytest.mark.parametrize(
+        ("model_name", "openrouter_slug"),
+        [
+            ("glm-4.7", "z-ai/glm-4.7"),
+            ("glm-5", "z-ai/glm-5"),
+        ],
+    )
+    def test_glm_models_with_claude_defaults_have_openrouter_slugs(
+        self, model_name: str, openrouter_slug: str
+    ):
+        """GLM Claude Code configs should expose OpenRouter provider slugs."""
+        model = ModelCatalog.get(model_name)
+        assert model is not None
+        assert model.provider_slugs.get("openrouter") == openrouter_slug
+        assert model.get_model_slug("openrouter") == openrouter_slug
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["glm-4.6", "glm-4.7", "glm-5"],
+    )
+    def test_glm_claude_code_defines_all_fallback_model_vars(
+        self, model_name: str
+    ):
+        """GLM Claude Code config should declare opus/sonnet/haiku fallbacks."""
+        model = ModelCatalog.get(model_name)
+        assert model is not None
+        settings = model.get_agent_settings("claude_code")
+        assert settings is not None
+
+        env_overrides = settings.get("env_overrides")
+        assert env_overrides is not None
+        assert "ANTHROPIC_DEFAULT_OPUS_MODEL" in env_overrides
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" in env_overrides
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" in env_overrides
+
+        provider_env_overrides = settings.get("provider_env_overrides")
+        assert isinstance(provider_env_overrides, dict)
+        openrouter_overrides = provider_env_overrides.get("openrouter")
+        assert isinstance(openrouter_overrides, dict)
+        assert "ANTHROPIC_DEFAULT_OPUS_MODEL" in openrouter_overrides
+        assert "ANTHROPIC_DEFAULT_SONNET_MODEL" in openrouter_overrides
+        assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" in openrouter_overrides
+
+    def test_minimax_m2_7_openrouter_claude_config_loaded(self):
+        """MiniMax M2.7 should load with explicit Claude fallback models."""
+        model = ModelCatalog.get("minimax-m2.7")
+        assert model is not None
+        assert model.internal_name == "minimax-m2.7"
+        assert model.provider == "openrouter"
+        assert model.pricing.input == 0.3
+        assert model.pricing.output == 1.2
+        assert model.pricing.cache_read == 0.06
+        assert model.pricing.cache_write == 0.375
+        assert model.provider_slugs.get("openrouter") == "minimax/minimax-m2.7"
+
+        settings = model.get_agent_settings("claude_code")
+        assert settings is not None
+        assert settings.get("endpoint") == "anthropic"
+        assert settings.get("env_overrides") == {
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "minimax/minimax-m2.7",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "minimax/minimax-m2.7",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "minimax/minimax-m2.7",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "minimax/minimax-m2.7",
+        }

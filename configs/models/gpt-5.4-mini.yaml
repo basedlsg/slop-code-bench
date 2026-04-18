@@ -1,0 +1,7 @@
+internal_name: gpt-5.4-mini
+provider: openai
+pricing:
+  input: 0.75
+  output: 4.50
+  cache_read: 0.075
+  cache_write: 0

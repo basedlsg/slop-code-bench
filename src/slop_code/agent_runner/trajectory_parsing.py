@@ -64,10 +64,12 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
         ClaudeCodeParser,
     )
     from slop_code.agent_runner.agents.codex.parser import CodexParser
+    from slop_code.agent_runner.agents.cursor_cli.parser import CursorCliParser
     from slop_code.agent_runner.agents.gemini.parser import GeminiParser
     from slop_code.agent_runner.agents.miniswe.parser import MinisweParser
     from slop_code.agent_runner.agents.opencode.parser import OpenCodeParser
     from slop_code.agent_runner.agents.openhands.parser import OpenHandsParser
+    from slop_code.agent_runner.agents.pi.parser import PiParser
 
     # Handle compressed artifacts
     if artifact_dir.is_file() and artifact_dir.suffix == ".gz":
@@ -78,7 +80,7 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
         temp_dir = Path(tempfile.mkdtemp())
         try:
             with tarfile.open(artifact_dir, "r:gz") as tar:
-                tar.extractall(temp_dir)
+                tar.extractall(temp_dir)  # noqa: S202
             return parse_trajectory(temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -89,9 +91,11 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
     # Try each parser in order of specificity
     # More specific formats first, broader formats last
     parsers = [
+        CursorCliParser,
         ClaudeCodeParser,
         CodexParser,
         OpenCodeParser,
+        PiParser,
         GeminiParser,
         OpenHandsParser,
         MinisweParser,  # Last since it matches any role-based format
@@ -102,7 +106,7 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
         if parser.can_parse(artifact_dir):
             try:
                 return parser.parse(artifact_dir)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 raise ParseError(
                     f"Failed to parse with {parser_cls.__name__}: {e}"
                 )

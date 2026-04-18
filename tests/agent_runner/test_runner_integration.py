@@ -106,10 +106,20 @@ class FailingAgent(Agent):
         cls,
         config: AgentConfigBase,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str | None,
     ) -> Agent:
         raise NotImplementedError("FailingAgent is for testing only")
+
+
+class ExplodingCheckpointAgent(FailingAgent):
+    def run_checkpoint(self, task: str):
+        del task
+        self.usage.steps += 1
+        self.usage.cost += 1.0
+        self.usage.current_tokens.input += 10
+        self.usage.net_tokens.input += 10
+        raise RuntimeError("checkpoint exploded")
 
 
 def fake_quality_metrics():
@@ -302,3 +312,94 @@ def test_agent_runner_stops_after_failed_checkpoint(tmp_path: Path) -> None:
 
     if runner_instance.progress_thread:
         runner_instance.progress_thread.join(timeout=1)
+
+
+def test_agent_runner_saves_artifacts_when_checkpoint_raises(
+    tmp_path: Path,
+) -> None:
+    problem = StubProblem(["first", "second"])
+    environment = StubEnvironment()
+    run_spec = _make_run_spec(problem, environment)
+    agent = ExplodingCheckpointAgent()
+
+    progress_queue: queue.Queue = queue.Queue()
+    output_path = tmp_path / "outputs"
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    workspace = tmp_path / "workspace"
+    fake_session = FakeSession(workspace)
+    checkpoints = [
+        StubCheckpoint(name="first", spec_text="Spec for first"),
+        StubCheckpoint(name="second", spec_text="Spec for second"),
+    ]
+    checkpoint_dirs = []
+    for checkpoint in checkpoints:
+        ckpt_dir = output_path / checkpoint.name
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_dirs.append((checkpoint, ckpt_dir))
+
+    saved_results: dict | None = None
+
+    def _save_results(results, metrics, _run_spec, _output_dir):
+        nonlocal saved_results
+        checkpoints_state = {}
+        for summary in results:
+            checkpoints_state[summary.checkpoint_name] = (
+                "error" if summary.had_error else "ran"
+            )
+        saved_results = {
+            "summary": {
+                "state": metrics.state.value,
+                "checkpoints": checkpoints_state,
+                "passed": False,
+                "passed_policy": False,
+                "total_cost": metrics.usage.cost,
+            },
+        }
+        return saved_results
+
+    with (
+        patch(
+            "slop_code.agent_runner.runner.create_agent_session",
+            return_value=fake_session,
+        ),
+        patch(
+            "slop_code.agent_runner.runner.reporting.setup_run_output_directory",
+            return_value=None,
+        ),
+        patch(
+            "slop_code.agent_runner.runner.get_checkpoints",
+            side_effect=lambda *_args, **_kwargs: iter(checkpoint_dirs),
+        ),
+        patch(
+            "slop_code.agent_runner.runner.evaluate_agent_snapshot",
+            return_value=(FakeReport(passed=False), fake_quality_metrics()),
+        ),
+        patch(
+            "slop_code.agent_runner.runner.reporting.save_results",
+            side_effect=_save_results,
+        ),
+    ):
+        runner_instance = runner.AgentRunner(
+            run_spec=run_spec,
+            agent=agent,
+            output_path=output_path,
+            progress_queue=progress_queue,
+        )
+
+        result = runner_instance.run()
+
+    assert result == saved_results
+    assert result["summary"]["state"] == AgentStateEnum.ERROR.value
+    assert result["summary"]["checkpoints"] == {"first": "error"}
+
+    artifacts_dir = output_path / "first" / AGENT_DIR_NAME
+    assert artifacts_dir.exists()
+    assert (artifacts_dir / "artifact.txt").read_text(encoding="utf-8") == (
+        "artifact"
+    )
+
+    inference_file = output_path / "first" / "inference_result.json"
+    assert inference_file.exists()
+    assert runner_instance.results[0].had_error is True
+    assert "checkpoint exploded" in inference_file.read_text(encoding="utf-8")

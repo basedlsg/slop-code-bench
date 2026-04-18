@@ -1,0 +1,11 @@
+# Lightweight debug/experimentation subset with one API problem.
+environment: docker-python3.12-uv
+prompt: just-solve
+thinking: high
+save_template: lite_runs/${model.name}_${agent.version}_${thinking}_${prompt}/${now:%Y%m%dT%H%M}
+problems:
+  - code_search
+  - xjq
+  - file_backup
+  - etl_pipeline
+  - datagate

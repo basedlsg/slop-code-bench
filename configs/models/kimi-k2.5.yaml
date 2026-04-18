@@ -1,0 +1,23 @@
+internal_name: kimi-k2-5
+provider: moonshot
+pricing:
+  input: 0.60
+  output: 3.00
+  cache_read: 0.10
+  cache_write: 0
+aliases:
+  - moonshotai/kimi-k2.5
+provider_slugs:
+  openrouter: moonshotai/kimi-k2.5
+agent_specific:
+  opencode:
+    provider_name: openrouter
+  claude_code:
+    endpoint: anthropic
+    env_overrides:
+      ANTHROPIC_MODEL: moonshotai/kimi-k2.5
+      ANTHROPIC_DEFAULT_OPUS_MODEL: moonshotai/kimi-k2.5
+      ANTHROPIC_DEFAULT_SONNET_MODEL: moonshotai/kimi-k2.5
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: moonshotai/kimi-k2.5
+      CLAUDE_CODE_SUBAGENT_MODEL: moonshotai/kimi-k2.5
+      ENABLE_TOOL_SEARCH: false

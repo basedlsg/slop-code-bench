@@ -24,6 +24,7 @@ class TestAPIKeyStore:
         # Check some known providers exist
         assert "anthropic" in providers
         assert "openai" in providers
+        assert "cursor" in providers
         assert "codex_auth" in providers
         assert "opencode_auth" in providers
         # Should be sorted
@@ -37,6 +38,9 @@ class TestAPIKeyStore:
         )
         assert (
             APIKeyStore.get_credential_type("openai") == CredentialType.ENV_VAR
+        )
+        assert (
+            APIKeyStore.get_credential_type("cursor") == CredentialType.ENV_VAR
         )
         assert (
             APIKeyStore.get_credential_type("zhipu") == CredentialType.ENV_VAR
@@ -61,6 +65,7 @@ class TestAPIKeyStore:
         """Test getting env var name for known providers."""
         assert APIKeyStore.get_env_var_name("anthropic") == "ANTHROPIC_API_KEY"
         assert APIKeyStore.get_env_var_name("openai") == "OPENAI_API_KEY"
+        assert APIKeyStore.get_env_var_name("cursor") == "CURSOR_API_KEY"
         assert APIKeyStore.get_env_var_name("zhipu") == "ZHIPU_API_KEY"
 
     def test_get_env_var_name_file_provider_raises(self):

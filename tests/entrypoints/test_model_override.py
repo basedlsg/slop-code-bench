@@ -25,6 +25,16 @@ class TestParseModelOverride:
         with pytest.raises(ValueError):
             utils.parse_model_override("unknown-provider/gpt-5")
 
+    def test_parses_cursor_provider(self):
+        override = utils.parse_model_override("cursor/sonnet-4.5")
+        assert override.provider == "cursor"
+        assert override.name == "sonnet-4.5"
+
+    def test_parses_cursor_composer_2(self):
+        override = utils.parse_model_override("cursor/composer-2")
+        assert override.provider == "cursor"
+        assert override.name == "composer-2"
+
 
 def test_parse_model_override_raises_on_empty_provider():
     """Empty provider in /model format should raise."""

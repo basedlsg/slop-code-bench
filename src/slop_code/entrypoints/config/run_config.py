@@ -12,7 +12,7 @@ from pydantic import model_validator
 
 from slop_code.evaluation import PassPolicy
 
-ThinkingPresetType = Literal["none", "disabled", "low", "medium", "high"]
+ThinkingPresetType = Literal["none", "disabled", "low", "medium", "high", "xhigh"]
 
 
 class OneShotConfig(BaseModel):

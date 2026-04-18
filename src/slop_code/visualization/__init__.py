@@ -22,7 +22,7 @@ from slop_code.visualization.constants import VERSION_COLORS
 from slop_code.visualization.data_transforms import compute_progress_bins
 from slop_code.visualization.data_transforms import compute_progress_metric
 from slop_code.visualization.data_transforms import (
-    filter_high_thinking_checkpoints,
+                                                    filter_high_thinking_checkpoints,
 )
 from slop_code.visualization.data_transforms import filter_version_data
 from slop_code.visualization.data_transforms import format_model_display_name
@@ -30,7 +30,7 @@ from slop_code.visualization.data_transforms import get_provider
 from slop_code.visualization.data_transforms import get_version_colors
 from slop_code.visualization.data_transforms import normalize_per_1k_loc
 from slop_code.visualization.data_transforms import (
-    select_best_version_per_model,
+                                                    select_best_version_per_model,
 )
 from slop_code.visualization.graph_utils import FONT_FAMILY_IMPACT
 from slop_code.visualization.graph_utils import get_theme

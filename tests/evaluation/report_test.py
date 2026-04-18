@@ -452,7 +452,7 @@ class TestCorrectnessResults:
             assert "pytest_stderr" not in data
 
     def test_save_creates_grouped_tests_format(self):
-        """save() creates tests as grouped dict with passed/failed arrays."""
+        """save() creates tests as grouped dict with status arrays."""
         results = CorrectnessResults(
             problem_name="test",
             problem_version=1,
@@ -461,7 +461,7 @@ class TestCorrectnessResults:
             duration=5.0,
             entrypoint="python main.py",
             pytest_exit_code=1,
-            pytest_collected=3,
+            pytest_collected=4,
         )
 
         # Add tests from different groups with different statuses
@@ -495,6 +495,16 @@ class TestCorrectnessResults:
                 file_path="tests/test.py",
             )
         )
+        results.add_test_result(
+            EvalTestResult(
+                id="test_func_skip",
+                checkpoint="checkpoint_1",
+                group_type=GroupType.FUNCTIONALITY,
+                status="skipped",
+                duration_ms=25.0,
+                file_path="tests/test.py",
+            )
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir)
@@ -514,6 +524,7 @@ class TestCorrectnessResults:
         assert data["tests"]["checkpoint_1-Core"]["failed"] == [
             "test_core_fail"
         ]
+        assert data["tests"]["checkpoint_1-Core"]["skipped"] == []
 
         # Check structure for Functionality tests
         assert "checkpoint_1-Functionality" in data["tests"]
@@ -521,6 +532,9 @@ class TestCorrectnessResults:
             "test_func_pass"
         ]
         assert data["tests"]["checkpoint_1-Functionality"]["failed"] == []
+        assert data["tests"]["checkpoint_1-Functionality"]["skipped"] == [
+            "test_func_skip"
+        ]
 
     def test_save_grouped_tests_multiple_checkpoints(self):
         """Grouped tests correctly separate different checkpoints."""
@@ -664,10 +678,29 @@ class TestCorrectnessResults:
         assert "checkpoint_1-Core" in data["tests"]
         assert data["tests"]["checkpoint_1-Core"]["passed"] == ["test_pass"]
         assert data["tests"]["checkpoint_1-Core"]["failed"] == ["test_fail"]
+        assert data["tests"]["checkpoint_1-Core"]["skipped"] == []
 
         # Should still have other fields
         assert data["problem_name"] == "test"
         assert data["checkpoint_name"] == "checkpoint_1"
+
+    def test_to_output_dict_includes_test_collection_hash(self):
+        """to_output_dict() includes test_collection_hash when present."""
+        results = CorrectnessResults(
+            problem_name="test",
+            problem_version=1,
+            checkpoint_name="checkpoint_1",
+            checkpoint_version=1,
+            duration=5.0,
+            entrypoint="python main.py",
+            pytest_exit_code=0,
+            pytest_collected=0,
+            test_collection_hash="abc123",
+        )
+
+        data = results.to_output_dict()
+
+        assert data["test_collection_hash"] == "abc123"
 
     def test_save_creates_directory(self):
         """save() creates directory if it doesn't exist."""

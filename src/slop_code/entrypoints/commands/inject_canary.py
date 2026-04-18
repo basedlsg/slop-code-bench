@@ -104,6 +104,9 @@ def _is_excluded_path(
 
     parts = relative.parts
 
+    if _is_under_test_data_subtree(parts):
+        return True
+
     # Check if any path component is in excluded directories
     for part in parts:
         if part in EXCLUDED_DIRECTORIES:
@@ -117,6 +120,17 @@ def _is_excluded_path(
     if file_path.name in DATA_FILES:
         return True
 
+    return False
+
+
+def _is_under_test_data_subtree(parts: tuple[str, ...]) -> bool:
+    """Return True when the path is inside tests/data or tests/assets."""
+    for index, part in enumerate(parts):
+        if part != "tests":
+            continue
+        for inner in parts[index + 1 :]:
+            if inner in TEST_DATA_DIRECTORIES:
+                return True
     return False
 
 
@@ -245,6 +259,43 @@ def _inject_canary_shell(content: str, canary: str) -> str:
     return "\n".join(lines)
 
 
+def _inject_canary_javascript(content: str, canary: str) -> str:
+    """Inject canary into JavaScript, preserving shebang.
+
+    Args:
+        content: File content.
+        canary: Canary string to inject.
+
+    Returns:
+        Modified content with canary injected.
+    """
+    canary_line = f"// {'\n// '.join(canary.splitlines())}"
+
+    if canary_line in content:
+        return content
+
+    lines = content.split("\n")
+    insert_idx = 1 if lines and lines[0].startswith("#!") else 0
+    lines.insert(insert_idx, canary_line)
+    return "\n".join(lines)
+
+
+def _inject_canary_html(content: str, canary: str) -> str:
+    """Inject canary as HTML comment at start of HTML."""
+    canary_line = f"<!-- {canary} -->"
+    if content.startswith(canary_line):
+        return content
+    return f"{canary_line}\n{content}"
+
+
+def _inject_canary_css(content: str, canary: str) -> str:
+    """Inject canary as CSS block comment at start of CSS."""
+    canary_line = f"/* {canary} */"
+    if content.startswith(canary_line):
+        return content
+    return f"{canary_line}\n{content}"
+
+
 def _inject_canary_requirements(content: str, canary: str) -> str:
     """Inject canary as first line comment in requirements.txt.
 
@@ -281,6 +332,12 @@ def _get_injector(file_path: Path) -> callable | None:
         return _inject_canary_markdown
     if suffix == ".sh":
         return _inject_canary_shell
+    if suffix == ".js":
+        return _inject_canary_javascript
+    if suffix == ".html" or suffix == ".htm":
+        return _inject_canary_html
+    if suffix == ".css":
+        return _inject_canary_css
     if name == "requirements.txt":
         return _inject_canary_requirements
 
@@ -305,6 +362,9 @@ def _discover_eligible_files(
         "yaml": [],
         "markdown": [],
         "shell": [],
+        "javascript": [],
+        "html": [],
+        "css": [],
         "requirements": [],
     }
 
@@ -412,6 +472,22 @@ def _collect_solution_files(
         if not _is_excluded_path(py_file, problem_dir, static_asset_dirs):
             eligible["python"].append(py_file)
 
+    for js_file in solution_dir.rglob("*.js"):
+        if not _is_excluded_path(js_file, problem_dir, static_asset_dirs):
+            eligible["javascript"].append(js_file)
+
+    for html_file in solution_dir.rglob("*.html"):
+        if not _is_excluded_path(html_file, problem_dir, static_asset_dirs):
+            eligible["html"].append(html_file)
+
+    for html_file in solution_dir.rglob("*.htm"):
+        if not _is_excluded_path(html_file, problem_dir, static_asset_dirs):
+            eligible["html"].append(html_file)
+
+    for css_file in solution_dir.rglob("*.css"):
+        if not _is_excluded_path(css_file, problem_dir, static_asset_dirs):
+            eligible["css"].append(css_file)
+
     for req_file in solution_dir.rglob("requirements.txt"):
         if not _is_excluded_path(req_file, problem_dir, static_asset_dirs):
             eligible["requirements"].append(req_file)
@@ -437,6 +513,34 @@ def _collect_test_files(
         if _is_excluded_path(py_file, problem_dir, static_asset_dirs):
             continue
         eligible["python"].append(py_file)
+
+    for js_file in tests_dir.rglob("*.js"):
+        if _is_excluded_test_path(js_file, tests_dir):
+            continue
+        if _is_excluded_path(js_file, problem_dir, static_asset_dirs):
+            continue
+        eligible["javascript"].append(js_file)
+
+    for html_file in tests_dir.rglob("*.html"):
+        if _is_excluded_test_path(html_file, tests_dir):
+            continue
+        if _is_excluded_path(html_file, problem_dir, static_asset_dirs):
+            continue
+        eligible["html"].append(html_file)
+
+    for html_file in tests_dir.rglob("*.htm"):
+        if _is_excluded_test_path(html_file, tests_dir):
+            continue
+        if _is_excluded_path(html_file, problem_dir, static_asset_dirs):
+            continue
+        eligible["html"].append(html_file)
+
+    for css_file in tests_dir.rglob("*.css"):
+        if _is_excluded_test_path(css_file, tests_dir):
+            continue
+        if _is_excluded_path(css_file, problem_dir, static_asset_dirs):
+            continue
+        eligible["css"].append(css_file)
 
 
 def _process_file(
@@ -522,6 +626,9 @@ def inject_canary(
     - Markdown (.md): <!-- {canary} --> as first line
     - requirements.txt: # {canary} as first line
     - Shell (.sh): # {canary} after shebang
+    - JavaScript (.js): // {canary} after shebang if present
+    - HTML (.html/.htm): <!-- {canary} --> as first line
+    - CSS (.css): /* {canary} */ as first line
 
     Excludes test case directories (core/, hidden/, error/, etc.) and data files.
 
@@ -583,6 +690,9 @@ def inject_canary(
     typer.echo(f"  Markdown: {len(eligible_files['markdown'])}")
     typer.echo(f"  Requirements: {len(eligible_files['requirements'])}")
     typer.echo(f"  Shell: {len(eligible_files['shell'])}")
+    typer.echo(f"  JavaScript: {len(eligible_files['javascript'])}")
+    typer.echo(f"  HTML: {len(eligible_files['html'])}")
+    typer.echo(f"  CSS: {len(eligible_files['css'])}")
 
     if dry_run:
         typer.echo(
@@ -603,6 +713,9 @@ def inject_canary(
         + eligible_files["markdown"]
         + eligible_files["requirements"]
         + eligible_files["shell"]
+        + eligible_files["javascript"]
+        + eligible_files["html"]
+        + eligible_files["css"]
     )
     canary_string = CANARY_TEMPLATE.format(canary=canary, guid=guid)
 

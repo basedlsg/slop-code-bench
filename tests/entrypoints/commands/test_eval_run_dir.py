@@ -429,19 +429,16 @@ class TestAutoSkipLogic:
         # This is the core logic test - simulating what line 227 does
 
         # Test case 1: no flags (default)
-        problem_names: list[str] = []
         overwrite = False
         auto_skip_evaluated = not overwrite
         assert auto_skip_evaluated is True, "Default should auto-skip"
 
         # Test case 2: --overwrite only
-        problem_names = []
         overwrite = True
         auto_skip_evaluated = not overwrite
         assert auto_skip_evaluated is False, "--overwrite should not auto-skip"
 
         # Test case 3: --problem X only (THE BUG FIX)
-        problem_names = ["test_problem"]
         overwrite = False
         auto_skip_evaluated = not overwrite
         assert auto_skip_evaluated is True, (
@@ -449,7 +446,6 @@ class TestAutoSkipLogic:
         )
 
         # Test case 4: --problem X --overwrite
-        problem_names = ["test_problem"]
         overwrite = True
         auto_skip_evaluated = not overwrite
         assert auto_skip_evaluated is False, (
@@ -465,7 +461,6 @@ class TestAutoSkipLogic:
         - auto_skip_evaluated = True (because not overwrite)
         - If problem X is fully evaluated, it should be SKIPPED
         """
-        problem_name = "test_problem"
         overwrite = False
         auto_skip_evaluated = not overwrite  # True
 
@@ -504,7 +499,6 @@ class TestAutoSkipLogic:
         - auto_skip_evaluated = False (because overwrite=True)
         - Problem X should NOT be skipped
         """
-        problem_name = "test_problem"
         overwrite = True
         auto_skip_evaluated = not overwrite  # False
 
@@ -588,11 +582,14 @@ class TestEdgeCases:
 
         # Should NOT skip because config changed
         should_skip = False
-        if auto_skip_evaluated and _is_problem_fully_evaluated(problem_dir):
-            if not _has_evaluation_config_changed(
+        if (
+            auto_skip_evaluated
+            and _is_problem_fully_evaluated(problem_dir)
+            and not _has_evaluation_config_changed(
                 problem_dir, mock_source_config
-            ):
-                should_skip = True
+            )
+        ):
+            should_skip = True
 
         assert should_skip is False, "Config change should prevent skip"
 
@@ -606,7 +603,9 @@ class TestSchemaValidation:
     """Tests for schema version validation and upgrade logic."""
 
     def _create_old_evaluation(
-        self, checkpoint_dir: Path, include_eval_dir: bool = True
+        self,
+        checkpoint_dir: Path,
+        include_eval_dir: bool = True,  # noqa: FBT001, FBT002
     ) -> None:
         """Create an evaluation.json without schema_version but with all required fields."""
         eval_data = {
@@ -735,3 +734,4 @@ class TestSchemaValidation:
         (checkpoint_2 / "evaluation.json").write_text("{}")
 
         assert _try_upgrade_problem_evaluations(problem_dir) is False
+

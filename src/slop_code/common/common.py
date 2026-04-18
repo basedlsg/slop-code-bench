@@ -50,7 +50,7 @@ def deep_merge(
             and isinstance(result[key], dict)
             and isinstance(override_value, dict)
         ):
-            result[key] = _deep_merge(result[key], override_value)
+            result[key] = deep_merge(result[key], override_value)
         else:
             result[key] = override_value
     return result

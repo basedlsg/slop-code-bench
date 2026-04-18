@@ -1,0 +1,8 @@
+# Strict under-$20 subset chosen from historical run correlations.
+environment: docker-python3.12-uv
+prompt: just-solve
+thinking: high
+save_template: lite_under20_runs/${model.name}_${agent.version}_${thinking}_${prompt}/${now:%Y%m%dT%H%M}
+problems:
+  - mvvault
+  - xjq

@@ -44,7 +44,9 @@ _THINKING_TOKEN_MAP: dict[str, int] = {
     "low": 4000,
     "medium": 10000,
     "high": 31999,
+    "xhigh": 31999,
 }
+_CLAUDE_WORKSPACE_PROJECT = Path("projects") / "-workspace"
 
 
 def _format_command_for_logging(
@@ -68,6 +70,33 @@ def serialize_tool_list(tools: list[str]) -> str | None:
     if not filtered:
         return None
     return ",".join(filtered)
+
+
+def _usage_int(
+    usage: dict[str, tp.Any],
+    key: str,
+) -> int:
+    """Read integer token counts from a usage payload, treating null as zero."""
+    value = usage.get(key, 0)
+    if value is None:
+        return 0
+    return int(value)
+
+
+def _get_provider_env_overrides(
+    agent_settings: dict[str, tp.Any],
+    provider: str,
+) -> dict[str, str]:
+    """Get Claude env overrides for the active provider."""
+    env_overrides = dict(agent_settings.get("env_overrides", {}))
+    provider_env_overrides = agent_settings.get("provider_env_overrides", {})
+    if isinstance(provider_env_overrides, dict):
+        selected = provider_env_overrides.get(provider, {})
+        if isinstance(selected, dict):
+            env_overrides.update(
+                {key: str(value) for key, value in selected.items()}
+            )
+    return {key: str(value) for key, value in env_overrides.items()}
 
 
 class ClaudeCodeConfig(AgentConfigBase):
@@ -124,7 +153,7 @@ class ClaudeCodeAgent(Agent):
         self,
         problem_name: str,
         image: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         # From base config
         cost_limits: AgentCostLimits,
         pricing: APIPricing,
@@ -146,6 +175,7 @@ class ClaudeCodeAgent(Agent):
         max_output_tokens: int | None,
         *,
         bedrock: bool = False,
+        foundry: bool = False,
     ) -> None:
         super().__init__(
             agent_name="claude_code",
@@ -172,6 +202,7 @@ class ClaudeCodeAgent(Agent):
         self.max_thinking_tokens = max_thinking_tokens
         self.max_output_tokens = max_output_tokens
         self._bedrock = bedrock
+        self._foundry = foundry
         self._session: Session | None = None
         self._environment: EnvironmentSpec | None = None
         self._runtime: StreamingRuntime | None = None
@@ -180,13 +211,14 @@ class ClaudeCodeAgent(Agent):
         self._tmp_dir: tempfile.TemporaryDirectory | None = None
         self._trace_dir: Path | None = None
         self._settings_path: Path | None = None
+        self._saved_trace_paths: set[Path] = set()
 
         self._last_prompt: str = ""
         self._last_steps: list[TrajectoryStep] = []
         self._last_command: AgentCommandResult | None = None
         self._prior_cost = 0.0
         self._image = image
-        self.steps = []
+        self.steps: list[dict[str, tp.Any]] = []
         self.final_result: RuntimeResult | None = None
         self._had_error: bool = False
         self._got_successful_result: bool = False
@@ -198,7 +230,7 @@ class ClaudeCodeAgent(Agent):
         model: ModelDefinition,
         credential: ProviderCredential,
         problem_name: str,
-        verbose: bool,
+        verbose: bool,  # noqa: FBT001
         image: str | None,
         thinking_preset: ThinkingPreset | None = None,
         thinking_max_tokens: int | None = None,
@@ -232,9 +264,16 @@ class ClaudeCodeAgent(Agent):
 
         # Merge env_overrides
         env = dict(config.env)
-        if "env_overrides" in agent_settings:
+        if (
+            "env_overrides" in agent_settings
+            or "provider_env_overrides" in agent_settings
+        ):
+            resolved_env_overrides = _get_provider_env_overrides(
+                agent_settings,
+                credential.provider,
+            )
             # Config env wins on conflicts
-            env = {**agent_settings["env_overrides"], **env}
+            env = {**resolved_env_overrides, **env}
 
         # Resolve thinking: CLI/config override > model default
         thinking: ThinkingPreset | None = thinking_preset
@@ -267,6 +306,7 @@ class ClaudeCodeAgent(Agent):
             max_thinking_tokens=max_thinking_tokens,
             max_output_tokens=config.max_output_tokens,
             bedrock=credential.provider == "bedrock",
+            foundry=credential.provider == "foundry",
         )
 
     @property
@@ -309,13 +349,20 @@ class ClaudeCodeAgent(Agent):
             )
         return Path(self._tmp_dir.name)
 
-    def _prepare_mounts(self) -> dict[str, dict[str, str]]:
+    def _prepare_mounts(self) -> dict[str, dict[str, str] | str]:
         if self._tmp_dir is None or self._workspace is None:
             raise AgentError(
                 "ClaudeCodeAgent has not been set up with a session"
             )
 
         settings = dict(resolve_env_vars(self.settings))
+        settings_env = self._build_settings_env(
+            settings.get("env", {})
+            if isinstance(settings.get("env"), dict)
+            else {}
+        )
+        if settings_env:
+            settings["env"] = settings_env
         if self.max_output_tokens is not None:
             settings["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = self.max_output_tokens
         settings.setdefault("showThinkingSummaries", True)
@@ -337,6 +384,103 @@ class ClaudeCodeAgent(Agent):
             },
         }
 
+    def _build_runtime_auth_env(self) -> dict[str, str]:
+        """Build authentication environment variables for runtime execution."""
+        env_overrides: dict[str, str] = {}
+        if self._bedrock:
+            env_overrides["CLAUDE_CODE_USE_BEDROCK"] = "1"
+            env_overrides["AWS_BEARER_TOKEN_BEDROCK"] = self.credential.value
+            env_overrides["AWS_REGION"] = os.environ.get(
+                "AWS_REGION", "us-east-1"
+            )
+            for var in (
+                "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+                "ANTHROPIC_BEDROCK_BASE_URL",
+            ):
+                val = os.environ.get(var)
+                if val:
+                    env_overrides[var] = val
+            for var, default in (
+                (
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    "us.anthropic.claude-opus-4-6-v1",
+                ),
+                (
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "us.anthropic.claude-sonnet-4-6",
+                ),
+                (
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                ),
+            ):
+                env_overrides[var] = os.environ.get(var, default)
+            return env_overrides
+
+        if self._foundry:
+            env_overrides["CLAUDE_CODE_USE_FOUNDRY"] = "1"
+            env_overrides["ANTHROPIC_FOUNDRY_API_KEY"] = self.credential.value
+            base_url = (
+                os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL") or self.base_url
+            )
+            if base_url:
+                env_overrides["ANTHROPIC_FOUNDRY_BASE_URL"] = base_url
+            else:
+                resource = os.environ.get("ANTHROPIC_FOUNDRY_RESOURCE")
+                if resource:
+                    env_overrides["ANTHROPIC_FOUNDRY_RESOURCE"] = resource
+            if (
+                "ANTHROPIC_FOUNDRY_RESOURCE" not in env_overrides
+                and "ANTHROPIC_FOUNDRY_BASE_URL" not in env_overrides
+            ):
+                raise AgentError(
+                    "Foundry provider requires ANTHROPIC_FOUNDRY_BASE_URL or "
+                    "ANTHROPIC_FOUNDRY_RESOURCE to be set"
+                )
+            opus_override = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+            if opus_override:
+                env_overrides["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus_override
+            for var, default in (
+                ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6"),
+                ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5"),
+            ):
+                env_overrides[var] = os.environ.get(var, default)
+            return env_overrides
+
+        env_overrides[self.credential.destination_key] = self.credential.value
+        if self.credential.destination_key not in (
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            env_overrides["ANTHROPIC_AUTH_TOKEN"] = self.credential.value
+        if self.credential.provider == "openrouter":
+            env_overrides["ANTHROPIC_API_KEY"] = ""
+        if self.base_url:
+            env_overrides["ANTHROPIC_BASE_URL"] = self.base_url
+        return env_overrides
+
+    def _build_settings_env(
+        self,
+        existing_env: dict[str, JsonValue],
+    ) -> dict[str, str]:
+        """Build the env block written into Claude's settings.json."""
+        settings_env = {key: str(value) for key, value in existing_env.items()}
+        settings_env.update(
+            {key: str(value) for key, value in self.env.items()}
+        )
+        if self._bedrock or self._foundry:
+            return settings_env
+        if self.credential.destination_key not in (
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            settings_env["ANTHROPIC_AUTH_TOKEN"] = self.credential.value
+        if self.credential.provider == "openrouter":
+            settings_env["ANTHROPIC_API_KEY"] = ""
+        if self.base_url:
+            settings_env["ANTHROPIC_BASE_URL"] = self.base_url
+        return settings_env
+
     @staticmethod
     def parse_line(line: str):
         try:
@@ -344,14 +488,13 @@ class ClaudeCodeAgent(Agent):
         except json.JSONDecodeError:
             return None, None, None
         if payload["type"] == "result":
-            input_tokens = payload["usage"].get("input_tokens", 0)
-            output_tokens = payload["usage"].get("output_tokens", 0)
-            cache_write_tokens = payload["usage"].get(
-                "cache_creation_input_tokens", 0
+            usage = payload["usage"]
+            input_tokens = _usage_int(usage, "input_tokens")
+            output_tokens = _usage_int(usage, "output_tokens")
+            cache_write_tokens = _usage_int(
+                usage, "cache_creation_input_tokens"
             )
-            cache_read_tokens = payload["usage"].get(
-                "cache_read_input_tokens", 0
-            )
+            cache_read_tokens = _usage_int(usage, "cache_read_input_tokens")
             tokens = TokenUsage(
                 input=input_tokens,
                 output=output_tokens,
@@ -373,10 +516,10 @@ class ClaudeCodeAgent(Agent):
         if not usage:
             return None, None, payload
 
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-        cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
-        cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+        input_tokens = _usage_int(usage, "input_tokens")
+        output_tokens = _usage_int(usage, "output_tokens")
+        cache_write_tokens = _usage_int(usage, "cache_creation_input_tokens")
+        cache_read_tokens = _usage_int(usage, "cache_read_input_tokens")
         return (
             None,
             TokenUsage(
@@ -410,10 +553,42 @@ class ClaudeCodeAgent(Agent):
             self._had_error = True
             self.log.error("Claude Code process had an error", error=payload)
 
+    def _resolve_result_usage(
+        self,
+        payload: dict[str, tp.Any],
+        reported_cost: float | None,
+        reported_tokens: TokenUsage | None,
+    ) -> tuple[float | None, TokenUsage | None]:
+        """Resolve final result usage for provider-specific pricing rules."""
+        if self.credential.provider != "openrouter":
+            return reported_cost, reported_tokens
+        if self.pricing is None:
+            return reported_cost, reported_tokens
+
+        model_usage = payload.get("modelUsage")
+        tokens: TokenUsage | None = reported_tokens
+        if isinstance(model_usage, dict) and model_usage:
+            tokens = TokenUsage()
+            for usage in model_usage.values():
+                if not isinstance(usage, dict):
+                    continue
+                tokens += TokenUsage(
+                    input=int(usage.get("inputTokens") or 0),
+                    output=int(usage.get("outputTokens") or 0),
+                    cache_read=int(usage.get("cacheReadInputTokens") or 0),
+                    cache_write=int(usage.get("cacheCreationInputTokens") or 0),
+                    reasoning=0,
+                )
+        if tokens is None:
+            return reported_cost, None
+        return self.pricing.get_cost(tokens), tokens
+
     def _run(
-        self, command: str | list[str], env_overrides: dict[str, str]
-    ) -> RuntimeResult:
-        if isinstance(command, list):
+        self,
+        command: collections.abc.Sequence[str] | str,
+        env_overrides: dict[str, str],
+    ) -> RuntimeResult | None:
+        if not isinstance(command, str):
             # I dont trust shlex join tbh
             command = " ".join(command)
 
@@ -451,12 +626,28 @@ class ClaudeCodeAgent(Agent):
             self._process_payload_for_error(payload)
 
             if cost is not None:
-                self.log.debug("Got result", cost=cost, verbose=True)
-                self.usage.cost = cost
-                assert tokens is not None
-                self.usage.net_tokens += tokens
-                self.usage.current_tokens = tokens
+                resolved_cost, resolved_tokens = self._resolve_result_usage(
+                    payload=payload,
+                    reported_cost=cost,
+                    reported_tokens=tokens,
+                )
+                self.log.debug(
+                    "Got result",
+                    cost=resolved_cost,
+                    verbose=True,
+                )
+                if resolved_cost is None or resolved_tokens is None:
+                    raise AgentError(
+                        "Claude Code result payload did not include token usage"
+                    )
+                self.usage.cost = resolved_cost
+                self.usage.net_tokens = resolved_tokens
+                self.usage.current_tokens = resolved_tokens
             elif tokens is not None and msg_id not in added_msg_ids:
+                if self.pricing is None:
+                    raise AgentError(
+                        "Claude Code agent requires pricing for token costs"
+                    )
                 cost = self.pricing.get_cost(tokens)
                 self.log.debug(
                     "Received step",
@@ -478,7 +669,8 @@ class ClaudeCodeAgent(Agent):
         self._environment = session.spec
         self._workspace = session.working_dir
         self._tmp_dir = tempfile.TemporaryDirectory()
-        volumes: dict[str, dict[str, str]] = {}
+        self._saved_trace_paths = set()
+        volumes: dict[str, dict[str, str] | str] = {}
         if isinstance(session.spec, DockerEnvironmentSpec):
             volumes = self._prepare_mounts()
         self._runtime = session.spawn(
@@ -571,44 +763,7 @@ class ClaudeCodeAgent(Agent):
         task: str,
     ) -> tuple[collections.abc.Sequence[str] | str, dict[str, str]]:
         env_overrides = {key: str(value) for key, value in self.env.items()}
-
-        if self._bedrock:
-            env_overrides["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            env_overrides["AWS_BEARER_TOKEN_BEDROCK"] = self.credential.value
-            env_overrides["AWS_REGION"] = os.environ.get(
-                "AWS_REGION", "us-east-1"
-            )
-            for var in (
-                "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-                "ANTHROPIC_BEDROCK_BASE_URL",
-            ):
-                val = os.environ.get(var)
-                if val:
-                    env_overrides[var] = val
-            for var, default in (
-                (
-                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                    "us.anthropic.claude-opus-4-6-v1",
-                ),
-                (
-                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                    "us.anthropic.claude-sonnet-4-6",
-                ),
-                (
-                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-                ),
-            ):
-                env_overrides[var] = os.environ.get(var, default)
-        else:
-            env_overrides[self.credential.destination_key] = (
-                self.credential.value
-            )
-            if self.credential.destination_key not in (
-                "ANTHROPIC_API_KEY",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-            ):
-                env_overrides["ANTHROPIC_AUTH_TOKEN"] = self.credential.value
+        env_overrides.update(self._build_runtime_auth_env())
         if self.max_output_tokens is not None:
             env_overrides["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 self.max_output_tokens
@@ -616,10 +771,9 @@ class ClaudeCodeAgent(Agent):
 
         env_overrides["FORCE_AUTO_BACKGROUND_TASKS"] = "1"
         env_overrides["ENABLE_BACKGROUND_TASKS"] = "1"
+        env_overrides["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
         env_overrides["DISABLE_AUTOUPDATER"] = "1"
         env_overrides["DISABLE_NON_ESSENTIAL_MODEL_CALLS"] = "1"
-        if self.base_url:
-            env_overrides["ANTHROPIC_BASE_URL"] = self.base_url
 
         # Set thinking tokens from preset or explicit value
         thinking_tokens: int | None = None
@@ -635,7 +789,7 @@ class ClaudeCodeAgent(Agent):
             env_overrides["MAX_THINKING_TOKENS"] = str(thinking_tokens)
 
         # Set reasoning effort level from thinking preset
-        if self.thinking in ("low", "medium", "high"):
+        if self.thinking in ("low", "medium", "high", "xhigh"):
             env_overrides["CLAUDE_CODE_EFFORT_LEVEL"] = self.thinking
 
         cli_args = self._build_cli_args()
@@ -721,15 +875,19 @@ class ClaudeCodeAgent(Agent):
                 reason="trace_dir_missing",
             )
             return
+        trace_root = self._trace_dir / _CLAUDE_WORKSPACE_PROJECT
         dest = output_dir / "workspace"
         copied = 0
-        for item in self._trace_dir.rglob("*"):
+        for item in trace_root.rglob("*"):
             if not item.is_file():
                 continue
             rel = item.relative_to(self._trace_dir)
+            if rel in self._saved_trace_paths:
+                continue
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(item.read_bytes())
+            self._saved_trace_paths.add(rel)
             copied += 1
         self.log.debug(
             "agent.claude_code.traces.saved",
@@ -739,6 +897,7 @@ class ClaudeCodeAgent(Agent):
 
     def cleanup(self) -> None:
         self._session = None
+        self._saved_trace_paths = set()
         self.log.debug("agent.claude_code.cleanup")
 
 

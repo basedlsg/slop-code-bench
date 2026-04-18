@@ -50,6 +50,21 @@ def get_artifacts_path(checkpoint_save_dir: Path, *, compress: bool) -> Path:
     return checkpoint_save_dir / common.AGENT_DIR_NAME
 
 
+def _load_eval_result(checkpoint_dir: Path) -> CorrectnessResults | None:
+    """Load evaluation results from a checkpoint directory, returning None on failure."""
+    eval_path = checkpoint_dir / common.EVALUATION_FILENAME
+    if not eval_path.exists():
+        return None
+    try:
+        return CorrectnessResults.from_dir(checkpoint_dir)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to load evaluation results",
+            checkpoint_dir=str(checkpoint_dir),
+        )
+        return None
+
+
 def create_agent_session(
     problem_config: ProblemConfig,
     environment_spec: EnvironmentSpec,
@@ -307,6 +322,7 @@ def _run_inference(
 ):
     logger.info("Running inference for checkpoint", checkpoint=checkpoint_name)
     snapshot_dir = save_dir / common.SNAPSHOT_DIR_NAME
+    started = datetime.now()
     try:
         result = _run_checkpoint_task(
             agent=agent,
@@ -318,6 +334,23 @@ def _run_inference(
         logger.info(
             "Completed checkpoint inference",
             checkpoint=checkpoint_name,
+        )
+    except Exception:
+        completed = datetime.now()
+        error = traceback.format_exc()
+        logger.error(
+            "Checkpoint inference raised exception",
+            checkpoint=checkpoint_name,
+            error=error,
+            exc_info=True,
+        )
+        result = CheckpointInferenceResult(
+            started=started,
+            completed=completed,
+            elapsed=(completed - started).total_seconds(),
+            usage=agent.usage.model_copy(deep=True),
+            had_error=True,
+            error_message=error,
         )
 
     finally:
@@ -423,23 +456,32 @@ class AgentRunner:
         reporting.setup_run_output_directory(self.run_spec, self.output_path)
 
         # Initialize metrics tracker
+        resume_info = self.resume_info
         if is_resuming:
+            if resume_info is None:
+                raise AgentRunnerError("Resume info missing for resumed run")
             # When resuming, initialize with prior usage from completed checkpoints
             self.metrics_tracker = MetricsTracker(
                 current_checkpoint="RESUMING",
-                usage=self.resume_info.prior_usage.model_copy(deep=True),
+                usage=resume_info.prior_usage.model_copy(deep=True),
                 started=datetime.now(),
                 checkpoint_started=datetime.now(),
             )
+            # Pre-load evaluation results for completed checkpoints so the initial
+            # progress update reflects existing stats immediately
+            for checkpoint_name in resume_info.completed_checkpoints:
+                checkpoint_dir = self.output_path / checkpoint_name
+                eval_result = _load_eval_result(checkpoint_dir)
+                self.metrics_tracker.record_checkpoint_result(
+                    checkpoint_name, eval_result
+                )
             # Set prior_cost on agent for rate limit tracking
-            self.agent.prior_cost = self.resume_info.prior_usage.cost
+            self.agent.prior_cost = resume_info.prior_usage.cost
             logger.info(
                 "Initialized metrics from prior checkpoints",
-                prior_cost=self.resume_info.prior_usage.cost,
-                prior_steps=self.resume_info.prior_usage.steps,
-                completed_checkpoints=len(
-                    self.resume_info.completed_checkpoints
-                ),
+                prior_cost=resume_info.prior_usage.cost,
+                prior_steps=resume_info.prior_usage.steps,
+                completed_checkpoints=len(resume_info.completed_checkpoints),
             )
         else:
             self.metrics_tracker = MetricsTracker(
@@ -466,9 +508,13 @@ class AgentRunner:
         self._session.__enter__()
 
         # Materialize assets: fresh runs do it explicitly, resume does it in restore_from_snapshot_dir
-        if is_resuming and self.resume_info.last_snapshot_dir:
+        if (
+            is_resuming
+            and resume_info is not None
+            and resume_info.last_snapshot_dir
+        ):
             self._session.restore_from_snapshot_dir(
-                self.resume_info.last_snapshot_dir
+                resume_info.last_snapshot_dir
             )
             self._run_resume_commands()
         else:
@@ -630,7 +676,7 @@ class AgentRunner:
         self,
         checkpoint: CheckpointConfig,
         checkpoint_save_dir: Path,
-        is_first_checkpoint: bool,
+        is_first_checkpoint: bool,  # noqa: FBT001
     ) -> AgentCheckpointSummary:
         self._setup_for_checkpoint(checkpoint)
         self.metrics_tracker.state = AgentStateEnum.RUNNING
@@ -650,13 +696,14 @@ class AgentRunner:
             agent_version=self.run_spec.agent_version,
             model_name=self.run_spec.model_name,
         )
-        reporting.save_agent_checkpoint_info(
-            checkpoint_save_dir,
-            diff,
-            result,
-            self.agent,
-            compress_artifacts=compress,
-        )
+        if result is not None:
+            reporting.save_agent_checkpoint_info(
+                checkpoint_save_dir,
+                diff,
+                result,
+                self.agent,
+                compress_artifacts=compress,
+            )
         artifacts_path = get_artifacts_path(
             checkpoint_save_dir, compress=compress
         )
@@ -785,9 +832,7 @@ class AgentRunner:
                     from slop_code.metrics import SnapshotMetrics
 
                     metrics = SnapshotMetrics(**quality_data)
-                    quality_report = (
-                        SnapshotQualityReport.from_snapshot_metrics(metrics)
-                    )
+                    SnapshotQualityReport.from_snapshot_metrics(metrics)
             except (OSError, json.JSONDecodeError, ValueError, KeyError) as e:
                 logger.warning(
                     "Failed to load evaluation results",
@@ -807,7 +852,7 @@ class AgentRunner:
             path=checkpoint_save_dir,
             snapshot_dir=snapshot_dir,
             artifacts=artifacts_path,
-            usage=UsageTracker(**usage_data) if usage_data else UsageTracker(),
+            usage=UsageTracker.model_validate(usage_data),
             had_error=result_data.get("had_error", False),
             pass_policy=self.run_spec.pass_policy,
             evaluation_result=evaluation_result,
@@ -844,8 +889,13 @@ class AgentRunner:
                 )
                 if existing_summary:
                     results.append(existing_summary)
-                    self.metrics_tracker.finish_checkpoint(
-                        existing_summary.usage
+                    self.metrics_tracker.current_checkpoint = checkpoint.name
+                    self.progress_queue.put(
+                        (
+                            self.run_spec.problem.name,
+                            self.agent.usage.model_copy(deep=True),
+                            self.metrics_tracker.model_copy(deep=True),
+                        )
                     )
                 continue
 

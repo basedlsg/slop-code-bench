@@ -11,4 +11,4 @@ provider_slugs:
   openrouter: moonshotai/kimi-k2-0905
 agent_specific:
   opencode:
-    provider: openrouter
+    provider_name: openrouter
