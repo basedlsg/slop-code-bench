@@ -66,6 +66,7 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
     from slop_code.agent_runner.agents.codex.parser import CodexParser
     from slop_code.agent_runner.agents.cursor_cli.parser import CursorCliParser
     from slop_code.agent_runner.agents.gemini.parser import GeminiParser
+    from slop_code.agent_runner.agents.kimi_cli.parser import KimiCliParser
     from slop_code.agent_runner.agents.miniswe.parser import MinisweParser
     from slop_code.agent_runner.agents.opencode.parser import OpenCodeParser
     from slop_code.agent_runner.agents.openhands.parser import OpenHandsParser
@@ -96,6 +97,7 @@ def parse_trajectory(artifact_dir: Path) -> Trajectory:
         CodexParser,
         OpenCodeParser,
         PiParser,
+        KimiCliParser,
         GeminiParser,
         OpenHandsParser,
         MinisweParser,  # Last since it matches any role-based format

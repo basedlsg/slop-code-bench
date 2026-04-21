@@ -1,0 +1,10 @@
+internal_name: glm-4.7-flash
+provider: zhipu
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases: []
+provider_slugs:
+  openrouter: z-ai/glm-4.7-flash

@@ -1,5 +1,16 @@
 internal_name: gpt-5.4-mini
 provider: openai
+
+# Use --model opencode_auth/gpt-5.4-mini to drive via a ChatGPT Codex
+# subscription (opencode's built-in codex OAuth plugin).
+agent_specific:
+  opencode:
+    provider_name: openai
+    model: gpt-5.4-mini
+    thinking_enabled: true
+    config:
+      "$schema": "https://opencode.ai/config.json"
+
 pricing:
   input: 0.75
   output: 4.50

@@ -61,6 +61,7 @@ class AgentCheckpointSummary(BaseModel):
         snapshot_dir: Path,
         artifacts: Path,
         usage: UsageTracker,
+        *,
         had_error: bool,
         pass_policy: PassPolicy,
         evaluation_result: CorrectnessResults | None = None,
@@ -244,37 +245,40 @@ class MetricsTracker(BaseModel):
             name: Checkpoint name
             evaluation_result: Evaluation results, or None if evaluation was skipped
         """
+        checkpoint_result: CheckpointEvalResult
         if evaluation_result is None:
-            self.checkpoint_results.append(
-                CheckpointEvalResult(name=name, passed=False, iso_passed=False)
+            checkpoint_result = CheckpointEvalResult(
+                name=name,
+                passed=False,
+                iso_passed=False,
             )
-            return
+        else:
+            # Calculate pass rates
+            pass_counts = evaluation_result.pass_counts
+            total_counts = evaluation_result.total_counts
 
-        # Calculate pass rates
-        pass_counts = evaluation_result.pass_counts
-        total_counts = evaluation_result.total_counts
+            total_passed = sum(pass_counts.values())
+            total_total = sum(total_counts.values())
+            pass_rate = total_passed / total_total if total_total > 0 else 0.0
 
-        total_passed = sum(pass_counts.values())
-        total_total = sum(total_counts.values())
-        pass_rate = total_passed / total_total if total_total > 0 else 0.0
+            # Checkpoint pass rate excludes regression tests
+            regression_passed = pass_counts.get(GroupType.REGRESSION, 0)
+            regression_total = total_counts.get(GroupType.REGRESSION, 0)
+            checkpoint_passed = total_passed - regression_passed
+            checkpoint_total = total_total - regression_total
+            checkpoint_pass_rate = (
+                checkpoint_passed / checkpoint_total
+                if checkpoint_total > 0
+                else 0.0
+            )
 
-        # Checkpoint pass rate excludes regression tests
-        regression_passed = pass_counts.get(GroupType.REGRESSION, 0)
-        regression_total = total_counts.get(GroupType.REGRESSION, 0)
-        checkpoint_passed = total_passed - regression_passed
-        checkpoint_total = total_total - regression_total
-        checkpoint_pass_rate = (
-            checkpoint_passed / checkpoint_total
-            if checkpoint_total > 0
-            else 0.0
-        )
+            core_total = total_counts.get(GroupType.CORE, 0)
+            core_passed_count = pass_counts.get(GroupType.CORE, 0)
+            core_pass_rate = (
+                core_passed_count / core_total if core_total > 0 else 0.0
+            )
 
-        core_total = total_counts.get(GroupType.CORE, 0)
-        core_passed_count = pass_counts.get(GroupType.CORE, 0)
-        core_pass_rate = core_passed_count / core_total if core_total > 0 else 0.0
-
-        self.checkpoint_results.append(
-            CheckpointEvalResult(
+            checkpoint_result = CheckpointEvalResult(
                 name=name,
                 passed=math.isclose(pass_rate, 1.0),
                 iso_passed=math.isclose(checkpoint_pass_rate, 1.0),
@@ -282,7 +286,13 @@ class MetricsTracker(BaseModel):
                 pass_rate=pass_rate,
                 checkpoint_pass_rate=checkpoint_pass_rate,
             )
-        )
+
+        for index, existing in enumerate(self.checkpoint_results):
+            if existing.name == name:
+                self.checkpoint_results[index] = checkpoint_result
+                return
+
+        self.checkpoint_results.append(checkpoint_result)
 
 
 def setup_run_output_directory(

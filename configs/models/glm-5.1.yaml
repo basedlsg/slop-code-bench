@@ -41,6 +41,13 @@ agent_specific:
           models:
             z-ai/glm-5.1:
               options:
+                provider:
+                  order:
+                    - z-ai
+                    - fireworks
+                    - friendli
+                    - inceptron/fp8
+                  allow_fallbacks: false
                 thinking:
                   type: "enabled"
                 stream_options:

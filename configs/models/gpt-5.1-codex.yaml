@@ -2,6 +2,17 @@ internal_name: gpt-5.1-codex
 provider: openai
 provider_slugs:
   openai-codex: gpt-5.1-codex
+
+# Use --model opencode_auth/gpt-5.1-codex to drive via a ChatGPT Codex
+# subscription (opencode's built-in codex OAuth plugin).
+agent_specific:
+  opencode:
+    provider_name: openai
+    model: gpt-5.1-codex
+    thinking_enabled: true
+    config:
+      "$schema": "https://opencode.ai/config.json"
+
 pricing:
   input: 1.25
   output: 10

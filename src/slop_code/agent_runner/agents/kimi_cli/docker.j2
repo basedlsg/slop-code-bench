@@ -1,0 +1,18 @@
+FROM {{ base_image }}
+
+# --- Switch to non-root -----------------------------------------------------
+USER agent
+WORKDIR /workspace
+
+# Kimi CLI installs to ~/.local/bin
+ENV PATH="/tmp/agent_home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV UV_TOOL_BIN_DIR="/tmp/agent_home/.local/bin"
+ENV XDG_CONFIG_HOME="$HOME/.config"
+ENV XDG_DATA_HOME="$HOME/.local/share"
+
+# --- Install Kimi CLI -------------------------------------------------------
+RUN uv tool install --python 3.13 kimi-cli=={{ version }} && \
+    /tmp/agent_home/.local/bin/kimi --version
+
+# --- Default shell ----------------------------------------------------------
+CMD ["kimi"]

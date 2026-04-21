@@ -1,64 +1,73 @@
-"""Tests for evaluate_agent_run command and auto-skip logic."""
+"""Tests for evaluate_agent_run command behavior."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
-import pytest
 import yaml
 
+from slop_code.common import CHECKPOINT_RESULTS_FILENAME
+from slop_code.common import CONFIG_FILENAME
 from slop_code.common import PROBLEM_CONFIG_NAME
-from slop_code.entrypoints.commands.eval_run_dir import (
-    _can_upgrade_evaluation_schema,
-)
-from slop_code.entrypoints.commands.eval_run_dir import (
-    _extract_eval_relevant_fields,
-)
-from slop_code.entrypoints.commands.eval_run_dir import (
-    _has_evaluation_config_changed,
-)
+from slop_code.entrypoints.commands import eval_run_dir
 from slop_code.entrypoints.commands.eval_run_dir import (
     _is_evaluation_schema_current,
 )
 from slop_code.entrypoints.commands.eval_run_dir import (
     _is_problem_fully_evaluated,
 )
-from slop_code.entrypoints.commands.eval_run_dir import (
-    _try_upgrade_problem_evaluations,
-)
-from slop_code.entrypoints.commands.eval_run_dir import (
-    _upgrade_evaluation_schema,
-)
 from slop_code.evaluation import EVALUATION_SCHEMA_VERSION
+from slop_code.evaluation import PassPolicy
 from slop_code.evaluation import ProblemConfig
 
+if TYPE_CHECKING:
+    import typer
 
-def _create_valid_evaluation(
-    checkpoint_dir: Path,
-    problem_name: str = "test_problem",
-    checkpoint_name: str = "checkpoint_1",
+
+REQUIRED_EVAL_FIELDS = {
+    "problem_name": "test_problem",
+    "problem_version": 1,
+    "checkpoint_name": "checkpoint_1",
+    "checkpoint_version": 1,
+    "duration": 1.0,
+    "entrypoint": "python main.py",
+    "tests": {},
+    "pass_counts": {},
+    "total_counts": {},
+    "pytest_exit_code": 0,
+    "pytest_collected": 0,
+    "infrastructure_failure": False,
+}
+
+
+def _create_run_dir(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "environment.yaml").write_text("type: fake\n")
+    (run_dir / CONFIG_FILENAME).write_text("name: test-run\n")
+    return run_dir
+
+
+def _create_checkpoint(
+    problem_dir: Path,
+    checkpoint_name: str,
+    *,
+    schema_current: bool,
 ) -> None:
-    """Create a valid evaluation.json and evaluation/ directory for testing."""
-    eval_data = {
-        "schema_version": EVALUATION_SCHEMA_VERSION,
-        "problem_name": problem_name,
-        "problem_version": 1,
-        "checkpoint_name": checkpoint_name,
-        "checkpoint_version": 1,
-        "duration": 1.0,
-        "entrypoint": "python main.py",
-        "tests": {},
-        "pass_counts": {},
-        "total_counts": {},
-        "pytest_exit_code": 0,
-        "pytest_collected": 0,
-        "infrastructure_failure": False,
-    }
-    (checkpoint_dir / "evaluation.json").write_text(json.dumps(eval_data))
+    checkpoint_dir = problem_dir / checkpoint_name
+    checkpoint_dir.mkdir(parents=True)
 
-    # Create evaluation directory with required files
+    data = dict(REQUIRED_EVAL_FIELDS)
+    data["checkpoint_name"] = checkpoint_name
+    if schema_current:
+        data["schema_version"] = EVALUATION_SCHEMA_VERSION
+
+    (checkpoint_dir / "evaluation.json").write_text(json.dumps(data))
+
     eval_dir = checkpoint_dir / "evaluation"
     eval_dir.mkdir()
     (eval_dir / "stdout.txt").write_text("")
@@ -66,672 +75,420 @@ def _create_valid_evaluation(
     (eval_dir / "report.json").write_text("{}")
 
 
-# =============================================================================
-# Helper Function Tests: _is_problem_fully_evaluated
-# =============================================================================
-
-
-class TestIsProblemFullyEvaluated:
-    """Tests for the _is_problem_fully_evaluated helper function."""
-
-    def test_all_checkpoints_have_evaluation_json(self, tmp_path: Path) -> None:
-        """A problem with evaluation.json in all checkpoint dirs is fully evaluated."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        for i in [1, 2, 3]:
-            checkpoint_dir = problem_dir / f"checkpoint_{i}"
-            checkpoint_dir.mkdir()
-            _create_valid_evaluation(
-                checkpoint_dir, checkpoint_name=f"checkpoint_{i}"
-            )
-
-        assert _is_problem_fully_evaluated(problem_dir) is True
-
-    def test_missing_evaluation_json_in_one_checkpoint(
-        self, tmp_path: Path
-    ) -> None:
-        """A problem with missing evaluation.json in any checkpoint is not fully evaluated."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # checkpoint_1 has valid evaluation
-        checkpoint_1 = problem_dir / "checkpoint_1"
-        checkpoint_1.mkdir()
-        _create_valid_evaluation(checkpoint_1, checkpoint_name="checkpoint_1")
-
-        # checkpoint_2 does not have evaluation.json
-        checkpoint_2 = problem_dir / "checkpoint_2"
-        checkpoint_2.mkdir()
-
-        assert _is_problem_fully_evaluated(problem_dir) is False
-
-    def test_no_checkpoint_directories(self, tmp_path: Path) -> None:
-        """A problem with no checkpoint directories is not fully evaluated."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # Only non-checkpoint directories
-        (problem_dir / "other_dir").mkdir()
-        (problem_dir / "snapshot").mkdir()
-
-        assert _is_problem_fully_evaluated(problem_dir) is False
-
-    def test_empty_problem_directory(self, tmp_path: Path) -> None:
-        """An empty problem directory is not fully evaluated."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        assert _is_problem_fully_evaluated(problem_dir) is False
-
-    def test_ignores_non_checkpoint_directories(self, tmp_path: Path) -> None:
-        """Non-checkpoint directories are ignored in the evaluation check."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # Checkpoint with valid evaluation
-        checkpoint_1 = problem_dir / "checkpoint_1"
-        checkpoint_1.mkdir()
-        _create_valid_evaluation(checkpoint_1, checkpoint_name="checkpoint_1")
-
-        # Non-checkpoint directories (should be ignored)
-        (problem_dir / "snapshot").mkdir()
-        (problem_dir / "other_dir").mkdir()
-
-        assert _is_problem_fully_evaluated(problem_dir) is True
-
-
-# =============================================================================
-# Helper Function Tests: _extract_eval_relevant_fields
-# =============================================================================
-
-
-class TestExtractEvalRelevantFields:
-    """Tests for the _extract_eval_relevant_fields helper function."""
-
-    def test_extracts_all_relevant_fields(self) -> None:
-        """All evaluation-relevant fields are extracted from config."""
-        config = {
-            "name": "test_problem",
-            "version": 2,
-            "adapter": "python",
-            "static_assets": ["file1.txt", "file2.txt"],
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}, "hidden": {}},
-                },
-                "checkpoint_2": {
-                    "version": 2,
-                    "groups": {"core": {}},
-                },
-            },
-            "other_field": "ignored",
-        }
-
-        result = _extract_eval_relevant_fields(config)
-
-        assert result["version"] == 2
-        assert result["adapter"] == "python"
-        assert result["static_assets"] == ["file1.txt", "file2.txt"]
-        assert result["checkpoints"]["checkpoint_1"]["version"] == 1
-        assert sorted(result["checkpoints"]["checkpoint_1"]["groups"]) == [
-            "core",
-            "hidden",
-        ]
-
-    def test_minimal_config(self) -> None:
-        """Handles minimal config with missing optional fields."""
-        config = {"name": "test_problem"}
-
-        result = _extract_eval_relevant_fields(config)
-
-        assert result["version"] is None
-        assert result["adapter"] is None
-        assert result["static_assets"] is None
-        assert result["checkpoints"] == {}
-
-    def test_checkpoint_without_groups(self) -> None:
-        """Handles checkpoints that don't have groups defined."""
-        config = {
-            "checkpoints": {
-                "checkpoint_1": {"version": 1},
-            }
-        }
-
-        result = _extract_eval_relevant_fields(config)
-
-        assert result["checkpoints"]["checkpoint_1"]["groups"] == []
-
-
-# =============================================================================
-# Helper Function Tests: _has_evaluation_config_changed
-# =============================================================================
-
-
-class TestHasEvaluationConfigChanged:
-    """Tests for the _has_evaluation_config_changed helper function."""
-
-    @pytest.fixture
-    def mock_problem_config(self) -> MagicMock:
-        """Create a mock ProblemConfig."""
-        config = MagicMock(spec=ProblemConfig)
-        config.model_dump.return_value = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "python",
-            "static_assets": None,
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}},
-                }
-            },
-        }
-        return config
-
-    def test_no_saved_config_returns_true(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns True when no saved config exists."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is True
-        )
-
-    def test_matching_configs_returns_false(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns False when saved and source configs match."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # Save a config that matches the mock
-        saved_config = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "python",
-            "static_assets": None,
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}},
-                }
-            },
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is False
-        )
-
-    def test_version_differs_returns_true(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns True when version differs."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        saved_config = {
-            "name": "test_problem",
-            "version": 999,  # Different version
-            "adapter": "python",
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}},
-                }
-            },
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is True
-        )
-
-    def test_adapter_differs_returns_true(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns True when adapter differs."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        saved_config = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "javascript",  # Different adapter
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}},
-                }
-            },
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is True
-        )
-
-    def test_checkpoint_groups_differ_returns_true(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns True when checkpoint groups differ."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        saved_config = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "python",
-            "checkpoints": {
-                "checkpoint_1": {
-                    "version": 1,
-                    "groups": {"core": {}, "hidden": {}},  # Extra group
-                }
-            },
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is True
-        )
-
-    def test_corrupt_saved_config_returns_true(
-        self, tmp_path: Path, mock_problem_config: MagicMock
-    ) -> None:
-        """Returns True when saved config is corrupt/invalid YAML."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # Write invalid YAML
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            f.write("not: valid: yaml: {{{{")
-
-        assert (
-            _has_evaluation_config_changed(problem_dir, mock_problem_config)
-            is True
-        )
-
-
-# =============================================================================
-# Auto-Skip Logic Integration Tests
-# =============================================================================
-
-
-class TestAutoSkipLogic:
-    """Tests for the auto_skip_evaluated logic.
-
-    These tests verify the core behavior of the fix:
-    - auto_skip_evaluated = not overwrite
-
-    This ensures:
-    - --problem X respects existing evaluations (unless overwrite)
-    - --overwrite forces re-evaluation regardless of --problem
-    """
-
-    @pytest.fixture
-    def evaluated_problem_dir(self, tmp_path: Path) -> Path:
-        """Create a fully evaluated problem directory."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        for i in [1, 2]:
-            checkpoint_dir = problem_dir / f"checkpoint_{i}"
-            checkpoint_dir.mkdir()
-            _create_valid_evaluation(
-                checkpoint_dir,
-                problem_name="test_problem",
-                checkpoint_name=f"checkpoint_{i}",
-            )
-
-        # Add saved problem config
-        saved_config = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "python",
-            "checkpoints": {
-                "checkpoint_1": {"version": 1, "groups": {}},
-                "checkpoint_2": {"version": 1, "groups": {}},
-            },
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        return problem_dir
-
-    @pytest.fixture
-    def unevaluated_problem_dir(self, tmp_path: Path) -> Path:
-        """Create an unevaluated problem directory."""
-        problem_dir = tmp_path / "unevaluated_problem"
-        problem_dir.mkdir()
-
-        for i in [1, 2]:
-            checkpoint_dir = problem_dir / f"checkpoint_{i}"
-            checkpoint_dir.mkdir()
-            # No evaluation.json files
-
-        return problem_dir
-
-    def test_auto_skip_depends_only_on_overwrite_flag(self) -> None:
-        """Verify auto_skip_evaluated = not overwrite (the fix)."""
-        # This is the core logic test - simulating what line 227 does
-
-        # Test case 1: no flags (default)
-        overwrite = False
-        auto_skip_evaluated = not overwrite
-        assert auto_skip_evaluated is True, "Default should auto-skip"
-
-        # Test case 2: --overwrite only
-        overwrite = True
-        auto_skip_evaluated = not overwrite
-        assert auto_skip_evaluated is False, "--overwrite should not auto-skip"
-
-        # Test case 3: --problem X only (THE BUG FIX)
-        overwrite = False
-        auto_skip_evaluated = not overwrite
-        assert auto_skip_evaluated is True, (
-            "--problem alone should still auto-skip"
-        )
-
-        # Test case 4: --problem X --overwrite
-        overwrite = True
-        auto_skip_evaluated = not overwrite
-        assert auto_skip_evaluated is False, (
-            "--problem with --overwrite should not auto-skip"
-        )
-
-    def test_problem_filter_with_skip_logic(
-        self, evaluated_problem_dir: Path
-    ) -> None:
-        """Verify --problem X combined with auto-skip works correctly.
-
-        When --problem X is specified without --overwrite:
-        - auto_skip_evaluated = True (because not overwrite)
-        - If problem X is fully evaluated, it should be SKIPPED
-        """
-        overwrite = False
-        auto_skip_evaluated = not overwrite  # True
-
-        # Simulate the skip logic from eval_run_dir.py lines 243-256
-        should_skip = False
-        if auto_skip_evaluated and _is_problem_fully_evaluated(
-            evaluated_problem_dir
-        ):
-            # Create a mock source config that matches the saved config
-            mock_source_config = MagicMock(spec=ProblemConfig)
-            mock_source_config.model_dump.return_value = {
-                "name": "test_problem",
+def _mock_source_problem(name: str) -> MagicMock:
+    source_problem = MagicMock(spec=ProblemConfig)
+    source_problem.name = name
+    source_problem.model_dump.return_value = {
+        "name": name,
+        "version": 1,
+        "adapter": "python",
+        "static_assets": None,
+        "checkpoints": {
+            "checkpoint_1": {
+                "name": "checkpoint_1",
                 "version": 1,
-                "adapter": "python",
-                "checkpoints": {
-                    "checkpoint_1": {"version": 1, "groups": {}},
-                    "checkpoint_2": {"version": 1, "groups": {}},
-                },
+                "order": 1,
+                "groups": {},
             }
-
-            if not _has_evaluation_config_changed(
-                evaluated_problem_dir, mock_source_config
-            ):
-                should_skip = True
-
-        assert should_skip is True, (
-            "--problem X should skip if already evaluated and config unchanged"
-        )
-
-    def test_problem_filter_with_overwrite_forces_evaluation(
-        self, evaluated_problem_dir: Path
-    ) -> None:
-        """Verify --problem X --overwrite forces re-evaluation.
-
-        When --problem X is specified WITH --overwrite:
-        - auto_skip_evaluated = False (because overwrite=True)
-        - Problem X should NOT be skipped
-        """
-        overwrite = True
-        auto_skip_evaluated = not overwrite  # False
-
-        # The skip logic is never entered because auto_skip_evaluated is False
-        should_skip = False
-        if auto_skip_evaluated and _is_problem_fully_evaluated(
-            evaluated_problem_dir
-        ):
-            should_skip = True
-
-        assert should_skip is False, "--problem X --overwrite should NOT skip"
+        },
+    }
+    source_problem.iterate_checkpoint_items.return_value = []
+    return source_problem
 
 
-# =============================================================================
-# Edge Case Tests
-# =============================================================================
+def _eval_summary() -> SimpleNamespace:
+    return SimpleNamespace(
+        successful=1,
+        failed=0,
+        total_checkpoints=1,
+        format_summary=lambda: "summary",
+    )
 
 
-class TestEdgeCases:
-    """Edge case tests for eval_run_dir functionality."""
-
-    def test_partial_evaluation_not_skipped(self, tmp_path: Path) -> None:
-        """Problems with partial evaluation (some checkpoints) are not skipped."""
-        problem_dir = tmp_path / "partial_problem"
-        problem_dir.mkdir()
-
-        # checkpoint_1 is evaluated
-        checkpoint_1 = problem_dir / "checkpoint_1"
-        checkpoint_1.mkdir()
-        _create_valid_evaluation(checkpoint_1, checkpoint_name="checkpoint_1")
-
-        # checkpoint_2 is NOT evaluated
-        checkpoint_2 = problem_dir / "checkpoint_2"
-        checkpoint_2.mkdir()
-
-        # Even with auto_skip enabled, partial evaluation should not be skipped
-        auto_skip_evaluated = True
-        should_skip = auto_skip_evaluated and _is_problem_fully_evaluated(
-            problem_dir
-        )
-
-        assert should_skip is False, (
-            "Partial evaluation should not trigger skip"
-        )
-
-    def test_config_change_overrides_skip(self, tmp_path: Path) -> None:
-        """Config changes trigger re-evaluation even when auto-skip is enabled."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
-
-        # Fully evaluated
-        for i in [1, 2]:
-            checkpoint_dir = problem_dir / f"checkpoint_{i}"
-            checkpoint_dir.mkdir()
-            _create_valid_evaluation(
-                checkpoint_dir,
-                problem_name="test_problem",
-                checkpoint_name=f"checkpoint_{i}",
-            )
-
-        # Saved config with old version
-        saved_config = {
-            "name": "test_problem",
-            "version": 1,
-            "adapter": "python",
-            "checkpoints": {},
-        }
-        with (problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
-            yaml.dump(saved_config, f)
-
-        # Source config with new version
-        mock_source_config = MagicMock(spec=ProblemConfig)
-        mock_source_config.model_dump.return_value = {
-            "name": "test_problem",
-            "version": 2,  # Changed!
-            "adapter": "python",
-            "checkpoints": {},
-        }
-
-        auto_skip_evaluated = True  # no --overwrite
-
-        # Should NOT skip because config changed
-        should_skip = False
-        if (
-            auto_skip_evaluated
-            and _is_problem_fully_evaluated(problem_dir)
-            and not _has_evaluation_config_changed(
-                problem_dir, mock_source_config
-            )
-        ):
-            should_skip = True
-
-        assert should_skip is False, "Config change should prevent skip"
+def _ctx(tmp_path: Path) -> typer.Context:
+    return cast(
+        "typer.Context",
+        SimpleNamespace(
+            obj=SimpleNamespace(verbosity=0, problem_path=tmp_path / "problems")
+        ),
+    )
 
 
-# =============================================================================
-# Schema Version and Upgrade Tests
-# =============================================================================
+def _stub_eval_dependencies(
+    monkeypatch,
+    tmp_path: Path,
+    available_problems: dict[str, MagicMock],
+    *,
+    evaluate_result: tuple[object | None, SimpleNamespace] | None = None,
+) -> MagicMock:
+    evaluate_mock = MagicMock(
+        return_value=evaluate_result or (None, _eval_summary())
+    )
+
+    monkeypatch.setattr(
+        eval_run_dir.config_loader,
+        "resolve_environment",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        eval_run_dir.common,
+        "ensure_docker_ready",
+        lambda _environment: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir.common,
+        "setup_command_logging",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir,
+        "get_available_problems",
+        lambda _problem_path: available_problems,
+    )
+    monkeypatch.setattr(
+        eval_run_dir,
+        "_write_problem_and_checkpoint_configs",
+        lambda _problem_dir, _source_problem: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir.ProblemConfig,
+        "from_yaml",
+        lambda _path: MagicMock(spec=ProblemConfig),
+    )
+    monkeypatch.setattr(
+        eval_run_dir.evaluation_entry,
+        "create_problem_reports",
+        lambda _problem_dir, _problem: ([], []),
+    )
+    monkeypatch.setattr(
+        eval_run_dir,
+        "update_results_jsonl",
+        lambda _report_file, _reports: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir,
+        "display_and_save_summary",
+        lambda _report_file, _agent_run_dir, _config, _console: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir.evaluation_entry,
+        "evaluate",
+        evaluate_mock,
+    )
+
+    return evaluate_mock
 
 
-class TestSchemaValidation:
-    """Tests for schema version validation and upgrade logic."""
-
-    def _create_old_evaluation(
-        self,
-        checkpoint_dir: Path,
-        include_eval_dir: bool = True,  # noqa: FBT001, FBT002
-    ) -> None:
-        """Create an evaluation.json without schema_version but with all required fields."""
-        eval_data = {
-            "problem_name": "test_problem",
-            "problem_version": 1,
-            "checkpoint_name": "checkpoint_1",
-            "checkpoint_version": 1,
-            "duration": 1.0,
-            "entrypoint": "python main.py",
-            "tests": {},
-            "pass_counts": {},
-            "total_counts": {},
-            "pytest_exit_code": 0,
-            "pytest_collected": 0,
-            "infrastructure_failure": False,
-        }
-        (checkpoint_dir / "evaluation.json").write_text(json.dumps(eval_data))
-
-        if include_eval_dir:
-            eval_dir = checkpoint_dir / "evaluation"
-            eval_dir.mkdir()
-            (eval_dir / "stdout.txt").write_text("")
-            (eval_dir / "stderr.txt").write_text("")
-            (eval_dir / "report.json").write_text("{}")
-
-    def test_is_schema_current_returns_false_without_version(
-        self, tmp_path: Path
-    ) -> None:
-        """Schema without version is not current."""
+class TestEvaluationSchemaHelpers:
+    def test_schema_current_requires_version(self, tmp_path: Path) -> None:
+        _create_checkpoint(tmp_path, "checkpoint_1", schema_current=False)
         checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-        self._create_old_evaluation(checkpoint_dir)
 
         assert _is_evaluation_schema_current(checkpoint_dir) is False
 
-    def test_is_schema_current_returns_true_with_version(
+    def test_problem_fully_evaluated_requires_current_schema(
         self, tmp_path: Path
     ) -> None:
-        """Schema with current version is current."""
-        checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-        _create_valid_evaluation(checkpoint_dir)
-
-        assert _is_evaluation_schema_current(checkpoint_dir) is True
-
-    def test_can_upgrade_returns_true_for_complete_old_schema(
-        self, tmp_path: Path
-    ) -> None:
-        """Old schema with all fields can be upgraded."""
-        checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-        self._create_old_evaluation(checkpoint_dir)
-
-        assert _can_upgrade_evaluation_schema(checkpoint_dir) is True
-
-    def test_can_upgrade_returns_false_without_eval_dir(
-        self, tmp_path: Path
-    ) -> None:
-        """Old schema without evaluation/ directory cannot be upgraded."""
-        checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-        self._create_old_evaluation(checkpoint_dir, include_eval_dir=False)
-
-        assert _can_upgrade_evaluation_schema(checkpoint_dir) is False
-
-    def test_can_upgrade_returns_false_with_missing_fields(
-        self, tmp_path: Path
-    ) -> None:
-        """Schema missing required fields cannot be upgraded."""
-        checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-
-        # Create incomplete evaluation.json
-        eval_data = {"problem_name": "test", "pytest_exit_code": 0}
-        (checkpoint_dir / "evaluation.json").write_text(json.dumps(eval_data))
-
-        assert _can_upgrade_evaluation_schema(checkpoint_dir) is False
-
-    def test_upgrade_adds_schema_version(self, tmp_path: Path) -> None:
-        """Upgrade adds schema_version to evaluation.json."""
-        checkpoint_dir = tmp_path / "checkpoint_1"
-        checkpoint_dir.mkdir()
-        self._create_old_evaluation(checkpoint_dir)
-
-        assert _upgrade_evaluation_schema(checkpoint_dir) is True
-
-        with (checkpoint_dir / "evaluation.json").open() as f:
-            data = json.load(f)
-        assert data["schema_version"] == EVALUATION_SCHEMA_VERSION
-
-    def test_try_upgrade_problem_succeeds_for_all_checkpoints(
-        self, tmp_path: Path
-    ) -> None:
-        """Successfully upgrade all checkpoints in a problem."""
-        problem_dir = tmp_path / "test_problem"
+        problem_dir = tmp_path / "problem"
         problem_dir.mkdir()
+        _create_checkpoint(problem_dir, "checkpoint_1", schema_current=False)
 
-        for i in [1, 2]:
-            checkpoint_dir = problem_dir / f"checkpoint_{i}"
-            checkpoint_dir.mkdir()
-            self._create_old_evaluation(checkpoint_dir)
+        assert _is_problem_fully_evaluated(problem_dir) is False
 
-        assert _try_upgrade_problem_evaluations(problem_dir) is True
 
-        # Verify all checkpoints now have current schema
-        for i in [1, 2]:
-            assert _is_evaluation_schema_current(
-                problem_dir / f"checkpoint_{i}"
+class TestEvaluateSelectionBehavior:
+    def test_default_skips_current_and_evaluates_missing_or_outdated(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        agent_run_dir = _create_run_dir(tmp_path)
+
+        complete_problem_dir = agent_run_dir / "complete_problem"
+        complete_problem_dir.mkdir()
+        _create_checkpoint(
+            complete_problem_dir, "checkpoint_1", schema_current=True
+        )
+
+        missing_problem_dir = agent_run_dir / "missing_problem"
+        missing_problem_dir.mkdir()
+        (missing_problem_dir / "checkpoint_1").mkdir()
+
+        outdated_problem_dir = agent_run_dir / "outdated_problem"
+        outdated_problem_dir.mkdir()
+        _create_checkpoint(
+            outdated_problem_dir, "checkpoint_1", schema_current=False
+        )
+
+        available_problems = {
+            "complete_problem": _mock_source_problem("complete_problem"),
+            "missing_problem": _mock_source_problem("missing_problem"),
+            "outdated_problem": _mock_source_problem("outdated_problem"),
+        }
+
+        evaluate_mock = _stub_eval_dependencies(
+            monkeypatch,
+            tmp_path,
+            available_problems,
+        )
+
+        eval_run_dir.evaluate_agent_run(
+            ctx=_ctx(tmp_path),
+            agent_run_dir=agent_run_dir,
+            problem_names=[],
+            pass_policy=PassPolicy.ALL_CASES,
+            env_config=None,
+            live_progress=False,
+            num_workers=1,
+            overwrite=False,
+        )
+
+        evaluated = {
+            problem_dir.name
+            for _, problem_dir in evaluate_mock.call_args.kwargs["problems"]
+        }
+        assert evaluated == {"missing_problem", "outdated_problem"}
+
+    def test_overwrite_evaluates_all_selected_problems(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        agent_run_dir = _create_run_dir(tmp_path)
+
+        for problem_name in ["datagate", "other_problem"]:
+            problem_dir = agent_run_dir / problem_name
+            problem_dir.mkdir()
+            _create_checkpoint(problem_dir, "checkpoint_1", schema_current=True)
+
+        available_problems = {
+            "datagate": _mock_source_problem("datagate"),
+            "other_problem": _mock_source_problem("other_problem"),
+        }
+
+        evaluate_mock = _stub_eval_dependencies(
+            monkeypatch,
+            tmp_path,
+            available_problems,
+        )
+
+        eval_run_dir.evaluate_agent_run(
+            ctx=_ctx(tmp_path),
+            agent_run_dir=agent_run_dir,
+            problem_names=[],
+            pass_policy=PassPolicy.ALL_CASES,
+            env_config=None,
+            live_progress=False,
+            num_workers=1,
+            overwrite=True,
+        )
+
+        evaluated = {
+            problem_dir.name
+            for _, problem_dir in evaluate_mock.call_args.kwargs["problems"]
+        }
+        assert evaluated == {"datagate", "other_problem"}
+
+    def test_problem_and_overwrite_only_evaluates_selected_problem(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        agent_run_dir = _create_run_dir(tmp_path)
+
+        for problem_name in ["datagate", "other_problem"]:
+            problem_dir = agent_run_dir / problem_name
+            problem_dir.mkdir()
+            _create_checkpoint(problem_dir, "checkpoint_1", schema_current=True)
+
+        available_problems = {
+            "datagate": _mock_source_problem("datagate"),
+            "other_problem": _mock_source_problem("other_problem"),
+        }
+
+        evaluate_mock = _stub_eval_dependencies(
+            monkeypatch,
+            tmp_path,
+            available_problems,
+        )
+
+        eval_run_dir.evaluate_agent_run(
+            ctx=_ctx(tmp_path),
+            agent_run_dir=agent_run_dir,
+            problem_names=["datagate"],
+            pass_policy=PassPolicy.ALL_CASES,
+            env_config=None,
+            live_progress=False,
+            num_workers=1,
+            overwrite=True,
+        )
+
+        evaluated = [
+            problem_dir.name
+            for _, problem_dir in evaluate_mock.call_args.kwargs["problems"]
+        ]
+        assert evaluated == ["datagate"]
+
+    def test_report_regeneration_uses_all_problem_directories_after_partial_overwrite(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        agent_run_dir = _create_run_dir(tmp_path)
+
+        for problem_name in ["datagate", "other_problem"]:
+            problem_dir = agent_run_dir / problem_name
+            problem_dir.mkdir()
+            (problem_dir / "checkpoint_1").mkdir()
+
+        available_problems = {
+            "datagate": _mock_source_problem("datagate"),
+            "other_problem": _mock_source_problem("other_problem"),
+        }
+
+        evaluate_mock = MagicMock(return_value=(None, _eval_summary()))
+        update_results_mock = MagicMock()
+
+        monkeypatch.setattr(
+            eval_run_dir.config_loader,
+            "resolve_environment",
+            lambda _path: object(),
+        )
+        monkeypatch.setattr(
+            eval_run_dir.common,
+            "ensure_docker_ready",
+            lambda _environment: None,
+        )
+        monkeypatch.setattr(
+            eval_run_dir.common,
+            "setup_command_logging",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            eval_run_dir,
+            "get_available_problems",
+            lambda _problem_path: available_problems,
+        )
+        monkeypatch.setattr(
+            eval_run_dir,
+            "_write_problem_and_checkpoint_configs",
+            lambda _problem_dir, _source_problem: None,
+        )
+        monkeypatch.setattr(
+            eval_run_dir.ProblemConfig,
+            "from_yaml",
+            lambda _path: MagicMock(spec=ProblemConfig),
+        )
+        monkeypatch.setattr(
+            eval_run_dir.evaluation_entry,
+            "create_problem_reports",
+            lambda problem_dir, _problem: (
+                [
+                    {
+                        "problem_name": problem_dir.name,
+                        "checkpoint_name": "checkpoint_1",
+                    }
+                ],
+                [],
+            ),
+        )
+        monkeypatch.setattr(
+            eval_run_dir,
+            "update_results_jsonl",
+            update_results_mock,
+        )
+        monkeypatch.setattr(
+            eval_run_dir,
+            "display_and_save_summary",
+            lambda _report_file, _agent_run_dir, _config, _console: None,
+        )
+        monkeypatch.setattr(
+            eval_run_dir.evaluation_entry,
+            "evaluate",
+            evaluate_mock,
+        )
+
+        eval_run_dir.evaluate_agent_run(
+            ctx=_ctx(tmp_path),
+            agent_run_dir=agent_run_dir,
+            problem_names=["datagate"],
+            pass_policy=PassPolicy.ALL_CASES,
+            env_config=None,
+            live_progress=False,
+            num_workers=1,
+            overwrite=True,
+        )
+
+        evaluated = [
+            problem_dir.name
+            for _, problem_dir in evaluate_mock.call_args.kwargs["problems"]
+        ]
+        assert evaluated == ["datagate"]
+
+        report_file, all_reports = update_results_mock.call_args.args
+        assert report_file == agent_run_dir / CHECKPOINT_RESULTS_FILENAME
+        assert {report["problem_name"] for report in all_reports} == {
+            "datagate",
+            "other_problem",
+        }
+
+    def test_planning_does_not_call_collection_preflight(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        agent_run_dir = _create_run_dir(tmp_path)
+
+        current_problem_dir = agent_run_dir / "already_evaluated"
+        current_problem_dir.mkdir()
+        _create_checkpoint(
+            current_problem_dir, "checkpoint_1", schema_current=True
+        )
+
+        to_eval_problem_dir = agent_run_dir / "needs_eval"
+        to_eval_problem_dir.mkdir()
+        (to_eval_problem_dir / "checkpoint_1").mkdir()
+
+        source_problem = _mock_source_problem("already_evaluated")
+        with (current_problem_dir / PROBLEM_CONFIG_NAME).open("w") as f:
+            yaml.safe_dump(
+                source_problem.model_dump.return_value, f, sort_keys=True
             )
 
-    def test_try_upgrade_fails_if_one_checkpoint_missing_fields(
-        self, tmp_path: Path
-    ) -> None:
-        """Upgrade fails if any checkpoint can't be upgraded."""
-        problem_dir = tmp_path / "test_problem"
-        problem_dir.mkdir()
+        available_problems = {
+            "already_evaluated": source_problem,
+            "needs_eval": _mock_source_problem("needs_eval"),
+        }
 
-        # checkpoint_1 can be upgraded
-        checkpoint_1 = problem_dir / "checkpoint_1"
-        checkpoint_1.mkdir()
-        self._create_old_evaluation(checkpoint_1)
+        evaluate_mock = _stub_eval_dependencies(
+            monkeypatch,
+            tmp_path,
+            available_problems,
+        )
 
-        # checkpoint_2 has incomplete data
-        checkpoint_2 = problem_dir / "checkpoint_2"
-        checkpoint_2.mkdir()
-        (checkpoint_2 / "evaluation.json").write_text("{}")
+        def _should_not_be_called(**_kwargs: object) -> tuple[bool, bool]:
+            raise AssertionError("collection preflight should not run")
 
-        assert _try_upgrade_problem_evaluations(problem_dir) is False
+        monkeypatch.setattr(
+            eval_run_dir,
+            "check_problem_needs_reevaluation",
+            _should_not_be_called,
+            raising=False,
+        )
 
+        eval_run_dir.evaluate_agent_run(
+            ctx=_ctx(tmp_path),
+            agent_run_dir=agent_run_dir,
+            problem_names=[],
+            pass_policy=PassPolicy.ALL_CASES,
+            env_config=None,
+            live_progress=False,
+            num_workers=1,
+            overwrite=False,
+        )
+
+        evaluated = [
+            problem_dir.name
+            for _, problem_dir in evaluate_mock.call_args.kwargs["problems"]
+        ]
+        assert evaluated == ["needs_eval"]

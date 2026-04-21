@@ -8,6 +8,7 @@ from slop_code.agent_runner.agents.claude_code.parser import ClaudeCodeParser
 from slop_code.agent_runner.agents.codex.parser import CodexParser
 from slop_code.agent_runner.agents.cursor_cli.parser import CursorCliParser
 from slop_code.agent_runner.agents.gemini.parser import GeminiParser
+from slop_code.agent_runner.agents.kimi_cli.parser import KimiCliParser
 from slop_code.agent_runner.agents.miniswe.parser import MinisweParser
 from slop_code.agent_runner.agents.opencode.parser import OpenCodeParser
 from slop_code.agent_runner.agents.openhands.parser import OpenHandsParser
@@ -407,6 +408,41 @@ class TestGeminiParser:
         assert traj.metadata["model"] == "gemini-1.5-pro"
 
 
+class TestKimiCliParser:
+    """Tests for KimiCliParser."""
+
+    def test_can_parse_kimi_file(self, tmp_path: Path) -> None:
+        kimi_file = tmp_path / "kimi-cli.txt"
+        kimi_file.write_text(
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"StepBegin","payload":{"n":1}}}\n'
+        )
+        parser = KimiCliParser()
+        assert parser.can_parse(tmp_path) is True
+
+    def test_parse_text_thinking_and_tool_result(self, tmp_path: Path) -> None:
+        kimi_file = tmp_path / "kimi-cli.txt"
+        kimi_file.write_text(
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"StepBegin","payload":{"n":1}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ContentPart","payload":{"type":"think","think":"inspect files"}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ContentPart","payload":{"type":"text","text":"Running shell command"}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ToolCall","payload":{"id":"Shell:1","function":{"name":"Shell","arguments":""}}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ToolCallPart","payload":{"arguments_part":"{\\"command\\": \\"ls\\"}"}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ToolResult","payload":{"tool_call_id":"Shell:1","return_value":{"output":"a.py\\n"}}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"TurnEnd","payload":{}}}\n'
+        )
+        parser = KimiCliParser()
+        traj = parser.parse(tmp_path)
+
+        assert traj.agent_type == "kimi_cli"
+        assert len(traj.steps) == 3
+        assert isinstance(traj.steps[0], ThinkingStep)
+        assert isinstance(traj.steps[1], AgentStep)
+        assert isinstance(traj.steps[2], ToolUseStep)
+        assert traj.steps[2].type == "Shell"
+        assert traj.steps[2].arguments == {"command": "ls"}
+        assert traj.steps[2].result == "a.py\n"
+
+
 class TestMinisweParser:
     """Tests for MinisweParser."""
 
@@ -667,6 +703,16 @@ class TestAutoDetectNewParsers:
 
         traj = parse_trajectory(tmp_path)
         assert traj.agent_type == "gemini"
+
+    def test_auto_detect_kimi_cli(self, tmp_path: Path) -> None:
+        kimi_file = tmp_path / "kimi-cli.txt"
+        kimi_file.write_text(
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"StepBegin","payload":{"n":1}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"ContentPart","payload":{"type":"text","text":"Hi"}}}\n'
+            '{"jsonrpc":"2.0","method":"event","params":{"type":"TurnEnd","payload":{}}}\n'
+        )
+        traj = parse_trajectory(tmp_path)
+        assert traj.agent_type == "kimi_cli"
 
     def test_auto_detect_miniswe(self, tmp_path: Path) -> None:
         """Test auto-detection of MiniSWE format."""

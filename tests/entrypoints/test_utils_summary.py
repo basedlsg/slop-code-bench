@@ -57,3 +57,51 @@ def test_display_and_save_summary_uses_new_composite_formulas(tmp_path):
     rendered = console.export_text()
     assert "Mean verbosity score" in rendered
     assert "Mean erosion score" in rendered
+
+
+def test_display_and_save_summary_uses_configured_checkpoint_total(tmp_path):
+    results_file = tmp_path / "checkpoint_results.jsonl"
+    rows = [
+        {
+            "problem": "prob1",
+            "checkpoint": "checkpoint_1",
+            "idx": 1,
+            "strict_pass_rate": 1.0,
+            "isolated_pass_rate": 1.0,
+        },
+        {
+            "problem": "prob2",
+            "checkpoint": "checkpoint_1",
+            "idx": 1,
+            "strict_pass_rate": 1.0,
+            "isolated_pass_rate": 1.0,
+        },
+    ]
+    results_file.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    (tmp_path / "prob1").mkdir()
+    (tmp_path / "prob1" / "problem.yaml").write_text(
+        "name: prob1\n"
+        "version: 1\n"
+        "checkpoints:\n"
+        "  - checkpoint_1\n"
+        "  - checkpoint_2\n"
+    )
+    (tmp_path / "prob2").mkdir()
+    (tmp_path / "prob2" / "problem.yaml").write_text(
+        "name: prob2\nversion: 1\ncheckpoints:\n  - checkpoint_1\n"
+    )
+
+    config = {
+        "model": {"name": "test-model"},
+        "thinking": "none",
+        "prompt_path": "test_prompt.jinja",
+        "agent": {"type": "test-agent", "version": "v1"},
+    }
+    console = Console(record=True)
+
+    summary = display_and_save_summary(results_file, tmp_path, config, console)
+
+    assert summary is not None
+    assert summary.num_checkpoints == 3
+    assert summary.pct_checkpoints_solved == pytest.approx((2 / 3) * 100)

@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel
@@ -416,7 +416,68 @@ def display_and_save_summary(
         return None
 
     summary = compute_run_summary(config, checkpoint_data)
+    _apply_configured_checkpoint_totals(summary, run_dir)
     render_summary_table(summary, console)
     save_summary_json(summary, run_dir)
 
     return summary
+
+
+def _count_configured_checkpoints(problem_config: dict[str, Any]) -> int:
+    checkpoints = problem_config.get("checkpoints")
+    if isinstance(checkpoints, dict):
+        return len(checkpoints)
+    if isinstance(checkpoints, list):
+        return len(checkpoints)
+    return 0
+
+
+def _sum_configured_checkpoints(run_dir: Path) -> int:
+    total = 0
+    for child in run_dir.iterdir():
+        if not child.is_dir():
+            continue
+        problem_config_path = child / common.PROBLEM_CONFIG_NAME
+        if not problem_config_path.exists():
+            continue
+        try:
+            with problem_config_path.open("r") as f:
+                raw = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.debug(
+                "Skipping malformed problem config while computing totals",
+                path=str(problem_config_path),
+                error=str(exc),
+            )
+            continue
+        if not isinstance(raw, dict):
+            continue
+        total += _count_configured_checkpoints(raw)
+    return total
+
+
+def _apply_configured_checkpoint_totals(
+    summary: RunSummary, run_dir: Path
+) -> None:
+    configured_total = _sum_configured_checkpoints(run_dir)
+    if configured_total <= 0:
+        return
+    if configured_total < summary.num_checkpoints:
+        logger.warning(
+            "Configured checkpoint total is lower than reported checkpoints",
+            configured_total=configured_total,
+            reported_total=summary.num_checkpoints,
+            run_dir=str(run_dir),
+        )
+        return
+
+    summary.num_checkpoints = configured_total
+    summary.pct_checkpoints_solved = (
+        summary.checkpoints_solved / configured_total
+    ) * 100
+    summary.pct_checkpoints_iso_solved = (
+        summary.checkpoints_iso_solved / configured_total
+    ) * 100
+    summary.pct_checkpoints_core_solved = (
+        summary.checkpoints_core_solved / configured_total
+    ) * 100

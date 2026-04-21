@@ -135,6 +135,11 @@ providers:
     env_var: MOONSHOT_API_KEY
     description: Moonshot AI API key for Kimi models
 
+  kimi:
+    type: env_var
+    env_var: KIMI_API_KEY
+    description: Kimi API key for direct kimi.com coding endpoint
+
   # File-based providers
   codex_auth:
     type: file

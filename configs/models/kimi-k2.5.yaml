@@ -8,10 +8,13 @@ pricing:
 aliases:
   - moonshotai/kimi-k2.5
 provider_slugs:
+  moonshot: kimi-k2.5
   openrouter: moonshotai/kimi-k2.5
 agent_specific:
   opencode:
     provider_name: openrouter
+    provider_name_overrides:
+      moonshot: moonshot
   claude_code:
     endpoint: anthropic
     env_overrides:

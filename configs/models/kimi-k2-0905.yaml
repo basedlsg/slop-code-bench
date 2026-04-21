@@ -8,7 +8,10 @@ pricing:
 aliases:
   - moonshotai/kimi-k2-0905
 provider_slugs:
+  moonshot: kimi-k2-0905
   openrouter: moonshotai/kimi-k2-0905
 agent_specific:
   opencode:
     provider_name: openrouter
+    provider_name_overrides:
+      moonshot: moonshot

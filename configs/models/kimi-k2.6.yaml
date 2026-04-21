@@ -1,15 +1,15 @@
-internal_name: kimi-k2-thinking
+internal_name: kimi-k2-6
 provider: moonshot
 pricing:
-  input: 0.45
-  output: 2.35
-  cache_read: 0
+  input: 0.95
+  output: 4.00
+  cache_read: 0.16
   cache_write: 0
 aliases:
-  - moonshotai/kimi-k2-thinking
+  - moonshotai/kimi-k2.6
 provider_slugs:
-  moonshot: kimi-k2-thinking
-  openrouter: moonshotai/kimi-k2-thinking
+  moonshot: kimi-k2.6
+  openrouter: moonshotai/kimi-k2.6
 agent_specific:
   opencode:
     provider_name: openrouter

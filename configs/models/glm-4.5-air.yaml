@@ -1,0 +1,10 @@
+internal_name: glm-4.5-air
+provider: zhipu
+pricing:
+  input: 0.2
+  output: 1.1
+  cache_read: 0.03
+  cache_write: 0
+aliases: []
+provider_slugs:
+  openrouter: z-ai/glm-4.5-air

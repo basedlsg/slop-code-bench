@@ -187,6 +187,8 @@ def _run_problems(
                     datetime.now() - metrics_tracker.started
                 ).total_seconds(),
                 cost=float(f"{net_cost:.5f}"),
+                steps=agent_usage.steps,
+                total_steps=metrics_tracker.usage.steps + agent_usage.steps,
             )
 
             if problem_states[problem_name].state == AgentStateEnum.ERROR:

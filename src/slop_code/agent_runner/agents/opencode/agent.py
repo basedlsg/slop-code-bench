@@ -29,6 +29,12 @@ from slop_code.execution import Session
 from slop_code.execution import StreamingRuntime
 
 STEP_FINISH_TYPE = "step_finish"
+THINKING_TO_VARIANT: dict[ThinkingPreset, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "max",
+}
 
 
 class OpenCodeAgentConfig(AgentConfigBase):
@@ -109,16 +115,21 @@ class OpenCodeAgent(Agent):
         # Use credential.provider (from CLI) to allow provider override
         endpoint = model.get_agent_endpoint("opencode", credential.provider)
 
-        # Get provider name from agent_specific (required)
-        provider = agent_settings.get("provider_name")
-        if provider is None:
-            raise AgentError(
-                "OpenCode requires 'provider_name' in model's "
-                "agent_specific.opencode settings"
-            )
+        provider_overrides = agent_settings.get("provider_name_overrides", {})
+        provider_override = None
+        if isinstance(provider_overrides, dict):
+            provider_override = provider_overrides.get(credential.provider)
+
+        # Provider resolution order:
+        # credential-specific override -> configured default -> model default.
+        provider = (
+            provider_override
+            or agent_settings.get("provider_name")
+            or model.provider
+        )
 
         # Get model slug for API calls
-        model_slug = model.get_model_slug(credential.provider)
+        model_slug = model.get_model_slug(provider)
 
         # Merge config (agent_specific base, YAML config overrides)
         opencode_config = dict(config.config)
@@ -191,11 +202,23 @@ class OpenCodeAgent(Agent):
     def _build_opencode_command(self, task: str) -> str:
         quoted_task = shlex.quote(task)
         quoted_model = shlex.quote(f"{self.provider}/{self.model_id}")
+        variant_flag = self._get_variant_flag()
+        maybe_variant = f" {variant_flag}" if variant_flag else ""
         return (
             f"opencode --model={quoted_model} run --format=json "
-            "--thinking --dangerously-skip-permissions -- "
+            f"--thinking --dangerously-skip-permissions{maybe_variant} -- "
             f"{quoted_task}"
         )
+
+    def _get_variant_flag(self) -> str | None:
+        if self.thinking in (None, "none", "disabled"):
+            return None
+        variant = THINKING_TO_VARIANT.get(self.thinking)
+        if self.thinking == "xhigh" and self.provider == "openai":
+            variant = "xhigh"
+        if variant is None:
+            return None
+        return f"--variant={shlex.quote(variant)}"
 
     def _make_opencode_config(self) -> Path:
         opencode_config_path = self.tmp_dir / "opencode.json"
@@ -210,7 +233,7 @@ class OpenCodeAgent(Agent):
                 "$schema": "https://opencode.ai/config.json",
             }
 
-        if self.thinking:
+        if self._should_inject_thinking_config():
             self._inject_thinking_config()
 
         with opencode_config_path.open("w") as f:
@@ -218,12 +241,16 @@ class OpenCodeAgent(Agent):
             f.write(json.dumps(self.open_code_config))
         return opencode_config_path
 
-    def _inject_thinking_config(self) -> None:
-        """Inject thinking/reasoning config into opencode config.
+    def _should_inject_thinking_config(self) -> bool:
+        if self.thinking in (None, "none", "disabled"):
+            return False
+        return self.provider != "openai"
 
-        For OpenRouter, injects into provider model options.
-        For other providers, uses agent.build.reasonEffort.
-        Existing config values take precedence (are not overwritten).
+    def _inject_thinking_config(self) -> None:
+        """Inject thinking/reasoning config as a compatibility fallback.
+
+        OpenAI flows should prefer ``--variant`` and let opencode handle
+        provider/model behavior. Non-OpenAI providers keep injection support.
         """
         if self.provider == "openrouter":
             defaults: dict[str, Any] = {
@@ -473,11 +500,33 @@ class OpenCodeAgent(Agent):
             cache_write=tokens["cache"].get("write", 0),
             reasoning=tokens["reasoning"],
         )
-        step_cost = msg_part["cost"]
+        step_cost = self._resolve_step_cost(
+            reported_cost=msg_part.get("cost"),
+            token_usage=token_usage,
+        )
         self.usage.step(
             cost=step_cost,
             tokens=token_usage,
         )
+
+    def _resolve_step_cost(
+        self,
+        reported_cost: Any,
+        token_usage: TokenUsage,
+    ) -> float:
+        step_cost: float | None = None
+        if isinstance(reported_cost, int | float):
+            step_cost = float(reported_cost)
+        elif isinstance(reported_cost, str):
+            with contextlib.suppress(ValueError):
+                step_cost = float(reported_cost)
+
+        # Trust a positive reported cost; otherwise fall back to catalog pricing.
+        if step_cost is not None and step_cost > 0:
+            return step_cost
+        if self.pricing is not None:
+            return self.pricing.get_cost(token_usage)
+        return 0.0
 
     def reset(self) -> None:
         self.continue_on_run = False

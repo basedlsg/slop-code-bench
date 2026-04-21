@@ -121,6 +121,8 @@ class ModelDefinition(BaseModel):
 
         opencode:
             provider_name: str - Provider identifier for opencode config
+            provider_name_overrides: dict[str, str] - Credential-provider keyed
+                provider overrides applied before provider_name
 
     Thinking Configuration:
         thinking: Preset for thinking budget (none/low/medium/high)

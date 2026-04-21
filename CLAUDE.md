@@ -344,3 +344,4 @@ Skills are invoked with `/skill-name <args>`. See `.claude/skills/` for full doc
 - `docs/evaluation-tests/stateful-testing.md` - State across checkpoints and modules
 - `docs/evaluation-tests/complex-parametrization.md` - Loading cases from JSON, YAML, directories
 - `docs/evaluation-tests/debugging-workflows.md` - Debugging test failures and workflows
+

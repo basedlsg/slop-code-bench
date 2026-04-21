@@ -15,10 +15,12 @@ uv sync                          # Install dependencies
 uv run slop-code --help           # List CLI commands
 uv run slop-code run ...          # Run an agent (see README for full example)
 slop-code eval outputs/<run-dir>  # Evaluate a run directory
+uv run slop-code tools run-case -s outputs/<snapshot> -p <problem> -c <n> -e configs/environments/docker-python3.12-uv.yaml
+bash scripts/eval_checkpoint <problem name> <n>
+
 uv run pytest -q                  # Run all tests
 uv run pytest tests/path/to/test_file.py
-uv run ruff check .               # Lint
-uv run isort .                    # Format imports
+uv run ruff check --fix .               # Lint
 ```
 
 ## Coding Style & Naming Conventions
@@ -31,6 +33,7 @@ uv run isort .                    # Format imports
 - Framework: pytest (see `pyproject.toml`).
 - Test files use `*_test.py` or `test_*.py` under `tests/`.
 - No explicit coverage target; add tests for new behavior and edge cases.
+- **NEVER** run a problem's test with pytest. ALWAYS use either: `scripts/eval_checkpoint.sh`, `uv run slop-code --quiet eval-snapshot`, or `uv run slop-code --quiet tools run-case`
 
 ## Commit & Pull Request Guidelines
 - Commit history favors short, capitalized summaries without scopes (e.g., “Canary Fix”). Keep messages concise and descriptive.
@@ -41,21 +44,3 @@ uv run isort .                    # Format imports
 - API keys are provided via environment variables (see README). Do not commit secrets.
 - Environment/runtime settings live in `configs/environments/` and `configs/providers.yaml`.
 
-## Skills
-These skills are discovered at startup from multiple local sources. Each entry
-includes a name, description, and file path so you can open the source for full
-instructions.
-- edge-cases: Analyze checkpoint tests and suggest missing edge cases. Use
-  after writing tests or when reviewing test coverage. Invoke with
-  `/edge-cases <problem> <checkpoint>`. (file:
-  `/home/gabe/Coding/slop-code-bench/.codex/skills/edge-cases/SKILL.md`)
-- skill-creator: Guide for creating effective skills. This skill should be used
-  when users want to create a new skill (or update an existing skill) that
-  extends Codex's capabilities with specialized knowledge, workflows, or tool
-  integrations. (file:
-  `/home/gabe/.codex/skills/.system/skill-creator/SKILL.md`)
-- skill-installer: Install Codex skills into `$CODEX_HOME/skills` from a
-  curated list or a GitHub repo path. Use when a user asks to list installable
-  skills, install a curated skill, or install a skill from another repo
-  (including private repos). (file:
-  `/home/gabe/.codex/skills/.system/skill-installer/SKILL.md`)

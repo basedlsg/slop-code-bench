@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from slop_code.agent_runner import runner
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.models import UsageTracker
 from slop_code.agent_runner.resume import ResumeInfo
+from slop_code.common import INFERENCE_RESULT_FILENAME
 from slop_code.common import PROMPT_FILENAME
 from slop_code.common.llms import TokenUsage
 
@@ -406,3 +408,87 @@ def test_run_problem_resume_does_not_double_count_prior_usage(
 
     assert ar.metrics_tracker.usage.cost == 7.0
     assert ar.metrics_tracker.usage.steps == 70
+
+
+def test_run_problem_resume_does_not_duplicate_preloaded_checkpoint_results(
+    tmp_path: Path,
+) -> None:
+    """Resume should keep one checkpoint result entry per checkpoint."""
+
+    agent = Mock(spec=Agent)
+    agent.usage = _usage(cost=4.0, steps=40)
+
+    run_spec = Mock()
+    run_spec.problem = Mock()
+    run_spec.problem.name = "prob"
+    run_spec.problem.checkpoints = {
+        "checkpoint_1": Mock(),
+        "checkpoint_2": Mock(),
+        "checkpoint_3": Mock(),
+    }
+    run_spec.compress_artifacts = False
+    run_spec.skip_evaluation = True
+    run_spec.pass_policy = Mock()
+
+    resume_info = ResumeInfo(
+        resume_from_checkpoint="checkpoint_3",
+        completed_checkpoints=["checkpoint_1", "checkpoint_2"],
+        last_snapshot_dir=None,
+        prior_usage=_usage(cost=3.0, steps=30),
+    )
+
+    ar = runner.AgentRunner(
+        run_spec=run_spec,
+        agent=agent,
+        output_path=tmp_path,
+        progress_queue=queue.Queue(),
+        resume_info=resume_info,
+    )
+    ar.metrics_tracker.usage = resume_info.prior_usage.model_copy(deep=True)
+    # Mimic setup() preloading completed checkpoint results.
+    ar.metrics_tracker.record_checkpoint_result("checkpoint_1", None)
+    ar.metrics_tracker.record_checkpoint_result("checkpoint_2", None)
+
+    for checkpoint_name, usage in (
+        ("checkpoint_1", {"cost": 1.0, "steps": 10}),
+        ("checkpoint_2", {"cost": 2.0, "steps": 20}),
+    ):
+        checkpoint_dir = tmp_path / checkpoint_name
+        checkpoint_dir.mkdir()
+        with (checkpoint_dir / INFERENCE_RESULT_FILENAME).open("w") as f:
+            json.dump({"usage": usage, "had_error": False}, f)
+
+    checkpoints = [
+        (StubCheckpoint("checkpoint_1", ""), tmp_path / "checkpoint_1"),
+        (StubCheckpoint("checkpoint_2", ""), tmp_path / "checkpoint_2"),
+        (StubCheckpoint("checkpoint_3", ""), tmp_path / "checkpoint_3"),
+    ]
+
+    summary = Mock()
+    summary.passed_policy = True
+    summary.had_error = False
+    summary.checkpoint_name = "checkpoint_3"
+    summary.usage = agent.usage
+
+    def _run_checkpoint_side_effect(*args: object, **kwargs: object) -> Mock:
+        ar.metrics_tracker.record_checkpoint_result("checkpoint_3", None)
+        return summary
+
+    with (
+        patch(
+            "slop_code.agent_runner.runner.get_checkpoints",
+            return_value=iter(checkpoints),
+        ),
+        patch.object(
+            runner.AgentRunner,
+            "_run_checkpoint",
+            side_effect=_run_checkpoint_side_effect,
+        ),
+    ):
+        ar._run_problem()
+
+    assert [r.name for r in ar.metrics_tracker.checkpoint_results] == [
+        "checkpoint_1",
+        "checkpoint_2",
+        "checkpoint_3",
+    ]

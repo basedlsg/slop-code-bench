@@ -3,7 +3,7 @@ provider: cursor
 pricing:
   input: 0.50
   output: 2.50
-  cache_read: 0.5
+  cache_read: 0.20
   cache_write: 0
 aliases:
   - composer2

@@ -2,7 +2,6 @@
 
 from slop_code.evaluation.collection import collect_checkpoint_tc
 from slop_code.evaluation.collection import compute_tc_hash
-from slop_code.evaluation.collection import compute_tc_hash_from_report
 from slop_code.evaluation.config import CheckpointConfig
 from slop_code.evaluation.config import ConfigError
 from slop_code.evaluation.config import GroupConfig
@@ -23,7 +22,6 @@ __all__ = [
     "CheckpointConfig",
     "collect_checkpoint_tc",
     "compute_tc_hash",
-    "compute_tc_hash_from_report",
     "ConfigError",
     "CorrectnessResults",
     "EVALUATION_SCHEMA_VERSION",

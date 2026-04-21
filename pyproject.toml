@@ -95,6 +95,7 @@ dev = [
     "flask>=3.1.2",
     "pytest-asyncio>=1.2.0",
     "ty>=0.0.14",
+    "vulture>=2.16",
 ]
 openhands = [
     "openhands-agent-server>=1.0.0a5",
@@ -119,7 +120,7 @@ norecursedirs = [
 [tool.ruff]
 exclude = [".venv",".gitignore", ".dockerignore"]
 line-length = 80
-extend-exclude = ["tests/mining/fixtures/*",".vscode/*","scratch/attempts/*","debug_code/*", "repos/*", "data/*",".venv/*",".pytest_cache/*", ".cache/*",".local/*", "tests/mining/fixtures/*","scripts/attempts/*","problems/**/solution/**"]
+extend-exclude = ["tests/mining/fixtures/*",".vscode/*","scratch/attempts/*","debug_code/*", "repos/*", "data/*",".venv/*",".pytest_cache/*", ".cache/*",".local/*", "tests/mining/fixtures/*","scripts/attempts/*","problems/**/solution/**","problems/**/tests/data/**"]
 show-fixes = true
 
 [tool.ruff.lint.isort]
@@ -172,5 +173,3 @@ reportCallInDefaultInitializer = false
 reportAny = false
 reportUnusedCallResult = false
 reportUnannotatedClassAttribute = false
-
-
