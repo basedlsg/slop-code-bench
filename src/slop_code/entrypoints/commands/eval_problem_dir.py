@@ -124,9 +124,10 @@ def evaluate_problem_dir(
     console = Console()
     common.ensure_docker_ready(environment)
 
+    problem_root = common.resolve_problem_catalog_root(ctx)
     problem = resolve_problem(
         submission_dir=submission_path,
-        problem_path=ctx.obj.problem_path,
+        problem_path=problem_root,
     )
 
     results = {}

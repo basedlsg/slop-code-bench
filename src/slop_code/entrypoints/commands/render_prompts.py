@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from slop_code.common.render import render_prompt
+from slop_code.entrypoints.commands import common
 from slop_code.entrypoints.commands.common import load_problem_config_or_exit
 from slop_code.entrypoints.config.loader import resolve_config_path
 from slop_code.entrypoints.config.loader import resolve_environment
@@ -186,7 +187,7 @@ def render_prompts(
         raise typer.Exit(1) from e
 
     # Discover problems
-    problem_path: Path = ctx.obj.problem_path
+    problem_path = common.resolve_problem_catalog_root(ctx)
     all_problem_dirs = sorted(
         d
         for d in problem_path.iterdir()

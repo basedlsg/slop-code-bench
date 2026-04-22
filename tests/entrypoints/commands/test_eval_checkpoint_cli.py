@@ -72,7 +72,7 @@ def test_eval_snapshot_renders_pytest_results(
     stub_report.report = results
 
     ctx = SimpleNamespace(
-        obj=SimpleNamespace(problem_path=tmp_path, verbosity=1)
+        obj=SimpleNamespace(scbench_home=tmp_path / "scbench-home", verbosity=1)
     )
 
     recorded_console: dict[str, RichConsole] = {}
@@ -86,6 +86,10 @@ def test_eval_snapshot_renders_pytest_results(
         patch(
             "slop_code.entrypoints.commands.eval_checkpoint.common.load_problem_config_or_exit",
             return_value=problem,
+        ),
+        patch(
+            "slop_code.entrypoints.commands.eval_checkpoint.common.resolve_problem_catalog_root",
+            return_value=tmp_path,
         ),
         patch(
             "slop_code.entrypoints.commands.eval_checkpoint.config_loader.resolve_environment",

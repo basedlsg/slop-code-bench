@@ -1,6 +1,6 @@
 ---
 version: 1.0
-last_updated: 2025-12-22
+last_updated: 2026-04-22
 ---
 
 # CLI Commands Reference
@@ -12,6 +12,7 @@ This section documents all commands available in the `slop-code` CLI.
 | Command | Description |
 |---------|-------------|
 | [`run`](run.md) | Run agents on benchmarks with unified config system |
+| [`sync`](sync.md) | Install/update the managed problem catalog |
 | [`eval`](eval.md) | Evaluate a directory of agent inference results |
 | [`eval-problem`](eval-problem.md) | Evaluate a single problem directory |
 | [`eval-snapshot`](eval-snapshot.md) | Evaluate a single snapshot directory |
@@ -31,10 +32,18 @@ These options are available on all commands:
 |--------|------|---------|-------------|
 | `-v, --verbose` | flag | 0 | Increase verbosity (repeatable) |
 | `--seed` | int | 42 | Random seed |
-| `-p, --problem-path` | path | `problems/` | Path to problem directory |
 | `--overwrite` | flag | false | Overwrite existing output directory |
 | `--debug` | flag | false | Enable debugging mode |
 | `--snapshot-dir-name` | string | `snapshot` | Name of the snapshot directory |
+
+Problem catalog location is controlled by the `SCBENCH_HOME` environment
+variable. If unset, it defaults to `~/.cache/scbench`.
+
+Problem catalog behavior:
+- First problem-using command bootstraps the latest release if no catalog is installed yet.
+- Commands do not auto-update once installed; run `slop-code sync` explicitly.
+- Resume requires the installed catalog commit to match the run's saved
+  `problem_catalog.json` metadata.
 
 ## Command Categories
 
@@ -42,6 +51,9 @@ These options are available on all commands:
 
 **Running agents:**
 ```bash
+# Install/update the managed problem catalog
+slop-code sync
+
 # Run with config file
 slop-code run --config my_run.yaml --problem file_backup
 
@@ -124,6 +136,7 @@ slop-code viz diff outputs/my_run
 | Document | Description |
 |----------|-------------|
 | [run.md](run.md) | Comprehensive guide to `slop-code run` with configuration system |
+| [sync.md](sync.md) | Managing the external problem catalog |
 | [eval.md](eval.md) | Evaluating run directories |
 | [eval-problem.md](eval-problem.md) | Evaluating single problems |
 | [eval-snapshot.md](eval-snapshot.md) | Evaluating single snapshots |

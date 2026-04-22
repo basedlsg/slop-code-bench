@@ -179,7 +179,7 @@ def _process_single_run_worker(
 
 
 def _process_single_run(
-    ctx: typer.Context,
+    problem_root: Path,
     run_dir: Path,
     problem_name: str | None,
     console: Console,
@@ -194,7 +194,7 @@ def _process_single_run(
     """Process a single run directory and return metrics.
 
     Args:
-        ctx: Typer context with problem_path in obj.
+        problem_root: Path to the managed problem catalog.
         run_dir: Path to the run directory.
         problem_name: Optional filter for specific problem.
         console: Rich console for output.
@@ -247,7 +247,7 @@ def _process_single_run(
         # Load problem config to get the entry file
         try:
             problem_config = common.load_problem_config(
-                ctx.obj.problem_path / problem_dir.name
+                problem_root / problem_dir.name
             )
             entry_file = problem_config.entry_file
         except (FileNotFoundError, yaml.YAMLError, ValidationError) as e:
@@ -371,6 +371,7 @@ def static_metrics(
     the provided path and processes each independently.
     """
     console = Console()
+    problem_root = common.resolve_problem_catalog_root(ctx)
 
     # Handle --just-static mode (only valid for single run)
     if just_static_extension:
@@ -415,7 +416,7 @@ def static_metrics(
             futures = {
                 executor.submit(
                     _process_single_run_worker,
-                    ctx.obj.problem_path,
+                    problem_root,
                     single_run_dir,
                     problem_name,
                 ): single_run_dir
@@ -490,7 +491,7 @@ def static_metrics(
                     with (single_run_dir / CONFIG_FILENAME).open("r") as f:
                         config = yaml.safe_load(f)
                     expected_checkpoints = count_expected_checkpoints(
-                        config, ctx.obj.problem_path
+                        config, problem_root
                     )
                     summary = display_and_save_summary(
                         report_file,
@@ -542,7 +543,7 @@ def static_metrics(
         report_errors,
         total_checkpoints,
         total_files_saved,
-    ) = _process_single_run(ctx, run_dir, problem_name, console)
+    ) = _process_single_run(problem_root, run_dir, problem_name, console)
 
     if total_checkpoints == 0 and not all_reports:
         # No problems found - exit was already handled in helper
@@ -572,9 +573,7 @@ def static_metrics(
 
     with (run_dir / CONFIG_FILENAME).open("r") as f:
         config = yaml.safe_load(f)
-    expected_checkpoints = count_expected_checkpoints(
-        config, ctx.obj.problem_path
-    )
+    expected_checkpoints = count_expected_checkpoints(config, problem_root)
     summary = display_and_save_summary(
         report_file, run_dir, config, console, expected_checkpoints
     )

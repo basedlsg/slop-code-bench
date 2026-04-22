@@ -8,6 +8,7 @@ from typing import Annotated
 
 import typer
 
+from slop_code.entrypoints.commands import common
 from slop_code.evaluation.config import get_available_problems
 from slop_code.logging import setup_logging
 
@@ -59,8 +60,8 @@ def make_registry(
         verbosity=ctx.obj.verbosity,
     )
 
-    problem_path: Path = ctx.obj.problem_path
-    problems = get_available_problems(problem_path)
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    problems = get_available_problems(problem_root)
 
     if problem:
         problems = {k: v for k, v in problems.items() if k in problem}

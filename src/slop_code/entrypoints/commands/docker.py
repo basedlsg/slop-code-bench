@@ -89,7 +89,8 @@ def build_submission_image(
     environment_config = config_loader.resolve_environment(
         environment_config_path
     )
-    problem = ProblemConfig.from_yaml(ctx.obj.problem_path / problem_name)
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    problem = ProblemConfig.from_yaml(problem_root / problem_name)
 
     static_assets = resolve_static_assets(problem.path, problem.static_assets)
     docker_runtime.build_submission_image(

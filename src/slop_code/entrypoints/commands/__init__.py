@@ -9,7 +9,6 @@ from slop_code.entrypoints.commands import eval_checkpoint
 from slop_code.entrypoints.commands import eval_problem_dir
 from slop_code.entrypoints.commands import eval_run_dir
 from slop_code.entrypoints.commands import infer_problem
-from slop_code.entrypoints.commands import inject_canary
 from slop_code.entrypoints.commands import judge
 from slop_code.entrypoints.commands import make_registry
 from slop_code.entrypoints.commands import migrate_evaluation_format
@@ -18,6 +17,7 @@ from slop_code.entrypoints.commands import render_prompts
 from slop_code.entrypoints.commands import repopulate_diffs
 from slop_code.entrypoints.commands import run_agent
 from slop_code.entrypoints.commands import static
+from slop_code.entrypoints.commands import sync
 from slop_code.entrypoints.commands import tools
 from slop_code.entrypoints.commands import variance
 from slop_code.entrypoints.commands import viz

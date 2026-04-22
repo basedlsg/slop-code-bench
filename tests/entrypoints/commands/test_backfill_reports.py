@@ -123,7 +123,7 @@ def test_backfill_reports_preserves_costs_for_all_agents(
     monkeypatch.setattr(
         backfill_reports_module,
         "_process_single_run_backfill",
-        lambda ctx, results_dir, logger: (reports, [], 1),
+        lambda problem_root, results_dir, logger: (reports, [], 1),
     )
     monkeypatch.setattr(
         backfill_reports_module,
@@ -149,10 +149,18 @@ def test_backfill_reports_preserves_costs_for_all_agents(
         "count_expected_checkpoints",
         lambda config, problems_dir: 0,
     )
+    monkeypatch.setattr(
+        backfill_reports_module.common,
+        "resolve_problem_catalog_root",
+        lambda _ctx: run_dir.parent,
+    )
     ctx = cast(
         "Any",
         SimpleNamespace(
-            obj=SimpleNamespace(verbosity=0, problem_path=run_dir.parent)
+            obj=SimpleNamespace(
+                verbosity=0,
+                scbench_home=run_dir.parent / ".scbench-home",
+            )
         ),
     )
 

@@ -1,11 +1,15 @@
 ---
 version: 1.0
-last_updated: 2025-12-22
+last_updated: 2026-04-22
 ---
 
 # problems
 
 Commands for inspecting problems and checking conversion status.
+
+The CLI reads problems from the managed catalog under `SCBENCH_HOME/problems`
+(default: `~/.cache/scbench/problems`). Install or update catalog data with
+`slop-code sync`.
 
 ## Subcommands
 

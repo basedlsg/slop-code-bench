@@ -1,6 +1,6 @@
 ---
 version: 1.0
-last_updated: 2025-12-26
+last_updated: 2026-04-22
 ---
 
 # utils
@@ -16,7 +16,6 @@ Utility commands for maintenance and data processing.
 | [`backfill-categories`](#backfill-categories) | Backfill rubric categories |
 | [`compress-artifacts`](#compress-artifacts) | Compress agent artifacts |
 | [`combine-results`](#combine-results) | Combine results from multiple runs |
-| [`inject-canary`](#inject-canary) | Inject canary strings |
 | [`render-prompts`](#render-prompts) | Render prompt templates |
 | [`migrate-eval-format`](#migrate-eval-format) | Migrate evaluation.json format |
 | [`make-registry`](#make-registry) | Generate problem registry JSONL |
@@ -267,62 +266,6 @@ slop-code utils combine-results outputs/runs -o analysis/all_results.jsonl
 
 # Overwrite existing
 slop-code utils combine-results outputs/runs -o outputs/combined.jsonl --overwrite
-```
-
----
-
-## inject-canary
-
-Inject canary strings into problem files for training data detection.
-
-### Usage
-
-```bash
-slop-code utils inject-canary [OPTIONS] CANARY GUID
-```
-
-### Arguments
-
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `CANARY` | Yes | The canary string to inject |
-| `GUID` | Yes | Unique identifier for this canary |
-
-### Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `-n, --dry-run` | flag | false | Preview changes without modifying files |
-| `-p, --problem` | string | - | Specific problem name(s) to process (repeatable) |
-
-### Behavior
-
-Injects tracking canary strings into eligible files within the problems
-directory. Useful for detecting if problem content appears in training data.
-
-**File types and injection format:**
-- Python (`.py`): Triple-quoted docstring after `__future__` imports
-- YAML (`.yaml`): Comment as first line
-- Markdown (`.md`): HTML comment as first line
-- Shell (`.sh`): Comment after shebang
-- `requirements.txt`: Comment as first line
-
-**Exclusions:**
-- Test case directories (`core/`, `hidden/`, `error/`, etc.)
-- Data files (`case.yaml`, `expected.yaml`, `META.yaml`)
-- Static asset directories
-
-### Examples
-
-```bash
-# Preview what would be modified
-slop-code utils inject-canary "CANARY_STRING_123" "abc-123-guid" --dry-run
-
-# Inject canary into all problems
-slop-code utils inject-canary "CANARY_STRING_123" "abc-123-guid"
-
-# Inject into specific problems only
-slop-code utils inject-canary "CANARY_STRING_123" "abc-123-guid" -p file_backup -p etl_pipeline
 ```
 
 ---

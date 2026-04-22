@@ -109,7 +109,10 @@ def _ctx(tmp_path: Path) -> typer.Context:
     return cast(
         "typer.Context",
         SimpleNamespace(
-            obj=SimpleNamespace(verbosity=0, problem_path=tmp_path / "problems")
+            obj=SimpleNamespace(
+                verbosity=0,
+                scbench_home=tmp_path / "scbench-home",
+            )
         ),
     )
 
@@ -139,6 +142,11 @@ def _stub_eval_dependencies(
         eval_run_dir.common,
         "setup_command_logging",
         lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        eval_run_dir.common,
+        "resolve_problem_catalog_root",
+        lambda _ctx: tmp_path / "problems",
     )
     monkeypatch.setattr(
         eval_run_dir,
@@ -368,6 +376,11 @@ class TestEvaluateSelectionBehavior:
             eval_run_dir.common,
             "setup_command_logging",
             lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            eval_run_dir.common,
+            "resolve_problem_catalog_root",
+            lambda _ctx: tmp_path / "problems",
         )
         monkeypatch.setattr(
             eval_run_dir,

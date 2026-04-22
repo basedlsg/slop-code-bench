@@ -9,6 +9,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from slop_code.entrypoints.commands import common
 from slop_code.evaluation import get_available_problems
 
 app = typer.Typer(
@@ -21,7 +22,8 @@ console = Console()
 @app.command("ls", help="List all available problems.")
 def list_problems(ctx: typer.Context) -> None:
     """List all problems with metadata in a table format."""
-    problems = get_available_problems(ctx.obj.problem_path)
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    problems = get_available_problems(problem_root)
 
     table = Table(title="Available Problems")
     table.add_column("Name", style="cyan", no_wrap=True)
@@ -50,7 +52,8 @@ def problem_status(
     problem_name: Annotated[str, typer.Argument(help="Problem name to check")],
 ) -> None:
     """Check problem conversion status and show test coverage per checkpoint."""
-    problem_path = ctx.obj.problem_path / problem_name
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    problem_path = problem_root / problem_name
 
     if not problem_path.exists():
         console.print(

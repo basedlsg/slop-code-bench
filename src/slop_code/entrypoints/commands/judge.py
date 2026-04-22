@@ -211,7 +211,8 @@ def judge_evaluate(
     environment = config_loader.resolve_environment(env_path)
 
     # Get available problems
-    valid_problems = get_available_problems(ctx.obj.problem_path)
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    valid_problems = get_available_problems(problem_root)
     logger.info(
         "Discovered problems",
         count=len(valid_problems),

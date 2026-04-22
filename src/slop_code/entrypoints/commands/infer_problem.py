@@ -209,13 +209,14 @@ def infer_problem(
         problem_name=problem_name,
         save_dir=save_dir,
     )
+    problem_root = common.resolve_problem_catalog_root(ctx)
     logger.info(
         "Using configs",
         agent_type=agent_config.type,
-        problem_path=str(ctx.obj.problem_path / problem_name),
+        problem_path=str(problem_root / problem_name),
         prompt_template_path=str(prompt_template_path),
     )
-    problem = ProblemConfig.from_yaml(ctx.obj.problem_path / problem_name)
+    problem = ProblemConfig.from_yaml(problem_root / problem_name)
     if isinstance(env_spec, docker_runtime.DockerEnvironmentSpec):
         if agent_config.docker_template is not None:
             image_name = common.build_agent_docker(

@@ -133,14 +133,14 @@ def _backfill_top20_share(
 
 
 def _process_single_run_backfill(
-    ctx: typer.Context,
+    problem_root: Path,
     results_dir: Path,
     logger: Any,
 ) -> tuple[list[dict], list[tuple[str, str]], int]:
     """Process a single run directory for backfill.
 
     Args:
-        ctx: Typer context with problem_path in obj.
+        problem_root: Path to the managed problem catalog.
         results_dir: Path to the run directory.
         logger: Logger instance.
 
@@ -181,19 +181,17 @@ def _process_single_run_backfill(
 
         # Try to load problem config with specific error handling
         try:
-            problem = ProblemConfig.from_yaml(
-                ctx.obj.problem_path / problem_name
-            )
+            problem = ProblemConfig.from_yaml(problem_root / problem_name)
         except FileNotFoundError:
             logger.error(
                 "Problem configuration not found",
                 problem_name=problem_name,
-                problem_path=str(ctx.obj.problem_path / problem_name),
+                problem_path=str(problem_root / problem_name),
             )
             all_errors.append(
                 (
                     problem_name,
-                    f"Problem config not found at {ctx.obj.problem_path / problem_name}",
+                    f"Problem config not found at {problem_root / problem_name}",
                 )
             )
             continue
@@ -714,6 +712,7 @@ def backfill_reports(
         log_dir=None,
         verbosity=ctx.obj.verbosity,
     )
+    problem_root = common.resolve_problem_catalog_root(ctx)
     if logger is None:
         raise RuntimeError("backfill-reports requires standard logging")
     logger.info("Backfilling high-level reports", results_dir=results_dir)
@@ -762,7 +761,9 @@ def backfill_reports(
 
             try:
                 all_reports, all_errors, problems_processed = (
-                    _process_single_run_backfill(ctx, single_run_dir, logger)
+                    _process_single_run_backfill(
+                        problem_root, single_run_dir, logger
+                    )
                 )
 
                 with (single_run_dir / CONFIG_FILENAME).open("r") as f:
@@ -816,7 +817,7 @@ def backfill_reports(
                 with (single_run_dir / CONFIG_FILENAME).open("r") as f:
                     config = yaml.safe_load(f)
                 expected_checkpoints = count_expected_checkpoints(
-                    config, ctx.obj.problem_path
+                    config, problem_root
                 )
                 display_and_save_summary(
                     report_file,
@@ -887,7 +888,7 @@ def backfill_reports(
 
     # Single run mode (default)
     all_reports, all_errors, problems_processed = _process_single_run_backfill(
-        ctx, results_dir, logger
+        problem_root, results_dir, logger
     )
 
     with (results_dir / CONFIG_FILENAME).open("r") as f:
@@ -936,9 +937,7 @@ def backfill_reports(
     console = Console()
     with (results_dir / CONFIG_FILENAME).open("r") as f:
         config = yaml.safe_load(f)
-    expected_checkpoints = count_expected_checkpoints(
-        config, ctx.obj.problem_path
-    )
+    expected_checkpoints = count_expected_checkpoints(config, problem_root)
     display_and_save_summary(
         report_file, results_dir, config, console, expected_checkpoints
     )

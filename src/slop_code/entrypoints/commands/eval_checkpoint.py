@@ -247,7 +247,8 @@ def evaluate_snapshot(
     # Validate rubric options
     common.validate_rubric_options(rubric_path, rubric_model)
 
-    problem_path = ctx.obj.problem_path / problem_name
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    problem_path = problem_root / problem_name
     problem = common.load_problem_config_or_exit(problem_path)
 
     environment = config_loader.resolve_environment(env_config)

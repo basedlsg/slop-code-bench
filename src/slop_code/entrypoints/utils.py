@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 class CLIContext(BaseModel):
     verbosity: int
     seed: int
-    problem_path: Path
+    scbench_home: Path
     overwrite: bool
     debug: bool
     snapshot_dir_name: str

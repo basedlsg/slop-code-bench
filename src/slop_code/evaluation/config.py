@@ -27,6 +27,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
 
+from slop_code import problem_catalog
 from slop_code.evaluation.report import GroupType
 
 DEFAULT_GROUP_TYPE = GroupType.CORE
@@ -860,9 +861,7 @@ class ProblemConfig(BaseConfig):
 def get_available_problems(problems_path: Path) -> dict[str, ProblemConfig]:
     problems = {}
     logger.debug("Getting available problems", problems_path=str(problems_path))
-    for problem_path in problems_path.iterdir():
-        if not problem_path.is_dir():
-            continue
+    for problem_path in problem_catalog.discover_problem_dirs(problems_path):
         try:
             problem_config = ProblemConfig.from_yaml(problem_path)
         except Exception as e:

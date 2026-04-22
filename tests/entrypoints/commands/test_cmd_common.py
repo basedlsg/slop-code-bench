@@ -7,6 +7,7 @@ import typer
 import yaml
 from pydantic import ValidationError
 
+from slop_code import problem_catalog
 from slop_code.entrypoints.commands import common
 from slop_code.execution import docker_runtime
 from slop_code.execution import local_streaming
@@ -127,6 +128,46 @@ def test_setup_command_logging(mock_setup_logging):
         console=console,
         add_multiproc_info=True,
     )
+
+
+def test_resolve_problem_catalog_root_bootstraps(monkeypatch, tmp_path):
+    """Problem commands resolve the managed catalog with bootstrap enabled."""
+    calls: dict[str, object] = {}
+    expected_root = tmp_path / "problems"
+
+    monkeypatch.setattr(
+        common.problem_catalog,
+        "get_problem_root",
+        lambda home, *, bootstrap: (
+            calls.update({"home": home, "bootstrap": bootstrap})
+            or expected_root
+        ),
+    )
+    ctx = MagicMock()
+    ctx.obj.scbench_home = tmp_path / "scbench-home"
+
+    result = common.resolve_problem_catalog_root(ctx)
+    assert result == expected_root
+    assert calls == {"home": ctx.obj.scbench_home, "bootstrap": True}
+
+
+def test_resolve_problem_catalog_root_exits_on_catalog_error(
+    monkeypatch, tmp_path
+):
+    """Catalog resolution errors surface as CLI exits."""
+    monkeypatch.setattr(
+        common.problem_catalog,
+        "get_problem_root",
+        lambda _home, *, bootstrap: (_ for _ in ()).throw(
+            problem_catalog.CatalogError("boom")
+        ),
+    )
+    ctx = MagicMock()
+    ctx.obj.scbench_home = tmp_path / "scbench-home"
+
+    with pytest.raises(typer.Exit) as exc:
+        common.resolve_problem_catalog_root(ctx)
+    assert exc.value.exit_code == 1
 
 
 # Tests for new unified config_loader.resolve_environment()

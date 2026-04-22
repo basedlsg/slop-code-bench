@@ -220,7 +220,8 @@ def evaluate_agent_run(
 
     common.ensure_docker_ready(environment)
 
-    valid_problems = get_available_problems(ctx.obj.problem_path)
+    problem_root = common.resolve_problem_catalog_root(ctx)
+    valid_problems = get_available_problems(problem_root)
     problems_to_eval = []
     skipped_count = 0
     selected_problem_names = problem_names or list(valid_problems.keys())
@@ -301,9 +302,7 @@ def evaluate_agent_run(
         typer.echo(f"Processing problem {p_dir}")
         problem_name = p_dir.name
         try:
-            problem = ProblemConfig.from_yaml(
-                ctx.obj.problem_path / problem_name
-            )
+            problem = ProblemConfig.from_yaml(problem_root / problem_name)
         except FileNotFoundError:
             logger.error(
                 "Problem configuration not found during report generation",
@@ -370,9 +369,7 @@ def evaluate_agent_run(
     with (agent_run_dir / CONFIG_FILENAME).open("r") as f:
         config = yaml.safe_load(f)
     # Display and save summary statistics
-    expected_checkpoints = count_expected_checkpoints(
-        config, ctx.obj.problem_path
-    )
+    expected_checkpoints = count_expected_checkpoints(config, problem_root)
     display_and_save_summary(
         report_file, agent_run_dir, config, console, expected_checkpoints
     )

@@ -8,6 +8,7 @@ import typer
 import yaml
 from rich.console import Console
 
+from slop_code import problem_catalog
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.credentials import API_KEY_STORE
 from slop_code.agent_runner.credentials import CredentialNotFoundError
@@ -424,9 +425,7 @@ def _discover_problems(problem_path: Path) -> list[str]:
         List of valid problem names found
     """
     problem_names: list[str] = []
-    for problem in sorted(problem_path.iterdir(), key=lambda x: x.name):
-        if not problem.exists():
-            continue
+    for problem in problem_catalog.discover_problem_dirs(problem_path):
         try:
             cfg = ProblemConfig.from_yaml(problem)
         except Exception as exc:  # noqa: BLE001
@@ -469,7 +468,7 @@ def _validate_problem_paths(
     """
     for problem in problem_names:
         full_path = problem_path / problem
-        if not full_path.exists():
+        if not full_path.exists() or not (full_path / "config.yaml").exists():
             typer.echo(
                 typer.style(
                     f"Problem path '{full_path}' does not exist.",
@@ -583,6 +582,7 @@ def _prepare_run_artifacts(
     env_spec: EnvironmentSpecType,
     agent_config: AgentConfigBase,
     run_cfg: ResolvedRunConfig,
+    catalog_manifest: problem_catalog.CatalogManifest,
 ) -> str:
     """Save configuration artifacts and build Docker image if needed.
 
@@ -604,6 +604,7 @@ def _prepare_run_artifacts(
             serialize_path_dict(run_cfg.model_dump(mode="json")),
             f,
         )
+    problem_catalog.save_run_catalog_manifest(run_dir, catalog_manifest)
 
     # Build docker image if needed
     if isinstance(env_spec, docker_runtime.DockerEnvironmentSpec):
@@ -1223,27 +1224,48 @@ def run_agent(
             run_cfg.output_path, ctx.obj.debug
         )
 
-    # 2. Resolve environment, model, and credentials
+    # 2. Resolve managed problem catalog
+    try:
+        scbench_home = Path(ctx.obj.scbench_home)
+        if is_resuming:
+            catalog_manifest = problem_catalog.validate_resume_catalog(
+                run_dir, scbench_home
+            )
+            problem_root = problem_catalog.get_problem_root(
+                scbench_home, bootstrap=False
+            )
+        else:
+            catalog_manifest = problem_catalog.ensure_catalog_installed(
+                scbench_home
+            )
+            problem_root = problem_catalog.get_problem_root(
+                scbench_home, bootstrap=False
+            )
+    except problem_catalog.CatalogError as exc:
+        typer.echo(typer.style(str(exc), fg=typer.colors.RED, bold=True))
+        raise typer.Exit(1) from exc
+
+    # 3. Resolve environment, model, and credentials
     env_spec, model_def, credential = _resolve_environment_and_credentials(
         run_cfg, provider_api_key_env
     )
 
-    # 3. Build agent config
+    # 4. Build agent config
     agent_config = _build_agent_config(run_cfg)
 
-    # 4. Echo model info
+    # 5. Echo model info
     typer.echo(f"Using model: {run_cfg.model.provider}/{run_cfg.model.name}")
     if provider_api_key_env:
         typer.echo(
             f"Using provider API key env override: {provider_api_key_env}"
         )
 
-    # 5. Resolve problem names from CLI and config
+    # 6. Resolve problem names from CLI and config
     problem_names_resolved = _resolve_problem_names(
         list(problem_names), list(run_cfg.problems), is_resuming=is_resuming
     )
 
-    # 6. Setup logging
+    # 7. Setup logging
     console = Console()
     common.setup_command_logging(
         log_dir=run_dir,
@@ -1265,9 +1287,9 @@ def run_agent(
         one_shot=run_cfg.one_shot.enabled,
     )
 
-    # 7. Discover problems if not specified
+    # 8. Discover problems if not specified
     if not problem_names_resolved:
-        problem_names_resolved = _discover_problems(ctx.obj.problem_path)
+        problem_names_resolved = _discover_problems(problem_root)
         typer.echo(
             typer.style(
                 f"Found {len(problem_names_resolved):,} problems",
@@ -1276,13 +1298,13 @@ def run_agent(
             )
         )
 
-    # 8. Validate problem paths exist
-    _validate_problem_paths(problem_names_resolved, ctx.obj.problem_path)
+    # 9. Validate problem paths exist
+    _validate_problem_paths(problem_names_resolved, problem_root)
 
     # Capture full resolved problem list before any filtering (for saving to config)
     full_problem_list = list(problem_names_resolved)
 
-    # 9. Handle pre-existing run directory
+    # 10. Handle pre-existing run directory
     requested = list(problem_names_resolved)
     if run_dir_preexisted:
         if ctx.obj.overwrite:
@@ -1302,7 +1324,7 @@ def run_agent(
         to_run, skipped, rerun_reasons = _filter_problems_for_execution(
             run_dir,
             problem_names_resolved,
-            ctx.obj.problem_path,
+            problem_root,
             run_cfg.prompt_content,
             env_spec,
             overwrite=ctx.obj.overwrite,
@@ -1336,30 +1358,34 @@ def run_agent(
         if _handle_early_completion(
             problem_names_resolved,
             run_dir,
-            ctx.obj.problem_path,
+            problem_root,
             console,
             evaluate,
             requested,
         ):
             return
 
-    # 10. Handle dry-run mode
+    # 11. Handle dry-run mode
     if dry_run:
         _preview_dry_run(
             problem_names_resolved,
             run_dir,
-            ctx.obj.problem_path,
+            problem_root,
             run_cfg.prompt_content,
             env_spec,
         )
         return
 
-    # 11. Update config with resolved/merged problems for future resumes
+    # 12. Update config with resolved/merged problems for future resumes
     run_cfg.problems = full_problem_list
 
-    # 12. Save environment and config to run directory, build docker image if needed
+    # 13. Save environment and config to run directory, build docker image if needed
     image_name = _prepare_run_artifacts(
-        run_dir, env_spec, agent_config, run_cfg
+        run_dir,
+        env_spec,
+        agent_config,
+        run_cfg,
+        catalog_manifest,
     )
     run_logger.info(
         "Starting agent runs",
@@ -1367,9 +1393,9 @@ def run_agent(
         num_workers=num_workers,
     )
 
-    # 13. Create task config
+    # 14. Create task config
     task_config = _create_task_config(
-        problem_base_path=ctx.obj.problem_path,
+        problem_base_path=problem_root,
         run_dir=run_dir,
         env_spec=env_spec,
         agent_config=agent_config,
@@ -1385,7 +1411,7 @@ def run_agent(
         resume=is_resuming,
     )
 
-    # 14. Run problems
+    # 15. Run problems
     results = problem_runner.run_problems(
         problem_names=problem_names_resolved,
         config=task_config,
@@ -1393,14 +1419,14 @@ def run_agent(
         console=console,
     )
 
-    # 15. Report results
+    # 16. Report results
     _report_results(results)
 
-    # 16. Create summary if evaluating
+    # 17. Create summary if evaluating
     if evaluate:
         _create_checkpoint_results_and_summary(
             run_dir=run_dir,
-            problems_base_path=ctx.obj.problem_path,
+            problems_base_path=problem_root,
             problem_names=problem_names_resolved,
             console=console,
         )

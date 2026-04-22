@@ -12,6 +12,7 @@ import yaml
 from pydantic import ValidationError
 from rich.console import Console
 
+from slop_code import problem_catalog
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.evaluation import ProblemConfig
 from slop_code.execution import docker_runtime
@@ -66,6 +67,18 @@ def validate_rubric_options(
             )
         )
         raise typer.Exit(1)
+
+
+def resolve_problem_catalog_root(
+    ctx: typer.Context, *, bootstrap: bool = True
+) -> Path:
+    """Resolve the managed problem catalog root for CLI commands."""
+    home = Path(ctx.obj.scbench_home)
+    try:
+        return problem_catalog.get_problem_root(home, bootstrap=bootstrap)
+    except problem_catalog.CatalogError as exc:
+        typer.echo(typer.style(str(exc), fg=typer.colors.RED, bold=True))
+        raise typer.Exit(1) from exc
 
 
 def load_problem_config(problem_path: Path) -> ProblemConfig:

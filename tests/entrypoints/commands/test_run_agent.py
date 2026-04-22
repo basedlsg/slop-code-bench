@@ -17,10 +17,12 @@ from slop_code.entrypoints.commands.run_agent import _handle_resume_validation
 from slop_code.entrypoints.commands.run_agent import (
     _load_and_validate_run_config,
 )
+from slop_code.entrypoints.commands.run_agent import _prepare_run_artifacts
 from slop_code.entrypoints.commands.run_agent import _resolve_output_directory
 from slop_code.entrypoints.commands.run_agent import _resolve_problem_names
 from slop_code.entrypoints.commands.run_agent import _validate_problem_paths
 from slop_code.entrypoints.commands.run_agent import _validate_resume_config
+from slop_code.problem_catalog import CatalogManifest
 
 
 class TestGetNested:
@@ -542,6 +544,36 @@ class TestCreateTaskConfig:
         assert result.resume is True
 
 
+class TestPrepareRunArtifacts:
+    """Tests for _prepare_run_artifacts helper function."""
+
+    def test_writes_problem_catalog_manifest(self, tmp_path):
+        """Run start persists problem_catalog.json metadata."""
+        run_cfg = MagicMock()
+        run_cfg.model_dump.return_value = {
+            "model": {"provider": "anthropic", "name": "sonnet-4.5"}
+        }
+        env_spec = MagicMock()
+        env_spec.model_dump.return_value = {"type": "local", "name": "local"}
+        agent_config = MagicMock()
+        agent_config.docker_template = None
+        manifest = CatalogManifest(version="v1.0.0", commit="abc123")
+
+        image_name = _prepare_run_artifacts(
+            run_dir=tmp_path,
+            env_spec=env_spec,
+            agent_config=agent_config,
+            run_cfg=run_cfg,
+            catalog_manifest=manifest,
+        )
+
+        assert image_name == ""
+        saved_manifest = yaml.safe_load(
+            (tmp_path / "problem_catalog.json").read_text()
+        )
+        assert saved_manifest == {"version": "v1.0.0", "commit": "abc123"}
+
+
 class TestDiscoverProblems:
     """Tests for _discover_problems helper function."""
 
@@ -657,6 +689,7 @@ class TestValidateProblemPaths:
         """Test validation passes when paths exist."""
         prob_dir = tmp_path / "exists"
         prob_dir.mkdir()
+        (prob_dir / "config.yaml").write_text("name: exists\n")
         # Should not raise
         _validate_problem_paths(["exists"], tmp_path)
 
@@ -669,14 +702,18 @@ class TestValidateProblemPaths:
     def test_multiple_existing_paths(self, tmp_path):
         """Test validation with multiple existing paths."""
         for name in ["prob1", "prob2", "prob3"]:
-            (tmp_path / name).mkdir()
+            prob_dir = tmp_path / name
+            prob_dir.mkdir()
+            (prob_dir / "config.yaml").write_text(f"name: {name}\n")
         # Should not raise
         _validate_problem_paths(["prob1", "prob2", "prob3"], tmp_path)
 
     def test_fails_on_first_missing(self, tmp_path):
         """Test validation fails on first missing path."""
         (tmp_path / "exists1").mkdir()
+        ((tmp_path / "exists1") / "config.yaml").write_text("name: exists1\n")
         (tmp_path / "exists2").mkdir()
+        ((tmp_path / "exists2") / "config.yaml").write_text("name: exists2\n")
         with pytest.raises(typer.Exit):
             _validate_problem_paths(["exists1", "missing", "exists2"], tmp_path)
 
