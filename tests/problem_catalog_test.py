@@ -53,6 +53,24 @@ def test_get_scbench_home_prefers_env(monkeypatch, tmp_path: Path) -> None:
     assert problem_catalog.get_scbench_home() == custom
 
 
+def test_get_override_problem_root_prefers_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    problems_root = tmp_path / "local-problems"
+    problems_root.mkdir()
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(problems_root))
+
+    assert problem_catalog.get_override_problem_root() == problems_root
+
+
+def test_get_override_problem_root_returns_none_when_unset(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("SCBENCH_PROBLEMS_PATH", raising=False)
+
+    assert problem_catalog.get_override_problem_root() is None
+
+
 def test_get_scbench_home_defaults_to_cache(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -72,6 +90,69 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     problem_catalog.save_manifest(home, manifest)
     loaded = problem_catalog.load_manifest(home)
     assert loaded == manifest
+
+
+def test_get_problem_root_uses_env_override_without_bootstrap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "scbench-home"
+    local_root = tmp_path / "local-problems"
+    problem_dir = local_root / "alpha"
+    problem_dir.mkdir(parents=True)
+    (problem_dir / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
+    monkeypatch.setattr(
+        problem_catalog,
+        "ensure_catalog_installed",
+        lambda _home: (_ for _ in ()).throw(
+            AssertionError("must not bootstrap managed catalog")
+        ),
+    )
+
+    resolved = problem_catalog.get_problem_root(home, bootstrap=True)
+    assert resolved == local_root
+
+
+def test_get_problem_root_env_override_requires_flat_problem_dirs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "scbench-home"
+    local_root = tmp_path / "local-problems"
+    (local_root / "nested" / "alpha").mkdir(parents=True)
+    (local_root / "nested" / "alpha" / "config.yaml").write_text(
+        "name: alpha\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
+
+    with pytest.raises(problem_catalog.CatalogError) as exc:
+        problem_catalog.get_problem_root(home, bootstrap=False)
+    assert "SCBENCH_PROBLEMS_PATH" in str(exc.value)
+    assert "flat directory" in str(exc.value)
+
+
+def test_ensure_catalog_installed_uses_env_override_without_sync(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "scbench-home"
+    local_root = tmp_path / "local-problems"
+    problem_dir = local_root / "alpha"
+    problem_dir.mkdir(parents=True)
+    (problem_dir / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
+    monkeypatch.setattr(
+        problem_catalog,
+        "sync_catalog",
+        lambda _home, _version: (_ for _ in ()).throw(
+            AssertionError("must not sync managed catalog")
+        ),
+    )
+
+    manifest = problem_catalog.ensure_catalog_installed(home)
+    assert manifest.version == "env-override"
+    assert manifest.commit == str(local_root.resolve())
 
 
 def test_resolve_latest_release_fetches_release_and_commit(
@@ -340,3 +421,62 @@ def test_validate_resume_catalog_rejects_commit_mismatch(
     assert "Run expects version v1.0.0 at commit abc123" in message
     assert "Installed catalog is version v1.0.0 at commit def456" in message
     assert "slop-code sync v1.0.0" in message
+
+
+def test_validate_resume_catalog_uses_env_override_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "scbench-home"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    local_root = tmp_path / "local-problems"
+    problem_dir = local_root / "alpha"
+    problem_dir.mkdir(parents=True)
+    (problem_dir / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
+
+    expected = problem_catalog.CatalogManifest(
+        version="env-override", commit=str(local_root.resolve())
+    )
+    problem_catalog.save_run_catalog_manifest(run_dir, expected)
+
+    installed = problem_catalog.validate_resume_catalog(run_dir, home)
+    assert installed == expected
+
+
+def test_validate_resume_catalog_env_override_rejects_path_mismatch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "scbench-home"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    old_root = tmp_path / "old-problems"
+    old_problem = old_root / "alpha"
+    old_problem.mkdir(parents=True)
+    (old_problem / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    new_root = tmp_path / "new-problems"
+    new_problem = new_root / "alpha"
+    new_problem.mkdir(parents=True)
+    (new_problem / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(new_root))
+
+    expected = problem_catalog.CatalogManifest(
+        version="env-override", commit=str(old_root.resolve())
+    )
+    problem_catalog.save_run_catalog_manifest(run_dir, expected)
+
+    with pytest.raises(problem_catalog.CatalogError) as exc:
+        problem_catalog.validate_resume_catalog(run_dir, home)
+    message = str(exc.value)
+    assert (
+        f"Run expects version env-override at commit {old_root.resolve()}"
+        in message
+    )
+    assert (
+        f"Installed catalog is version env-override at commit {new_root.resolve()}"
+        in message
+    )

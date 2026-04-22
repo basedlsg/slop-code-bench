@@ -1,8 +1,0 @@
-sources:
-  - name: main
-    inputs:
-      - "input.csv"
-      - "infix=elect"
-    format: auto
-    schema: Sale
-    precedence: 10

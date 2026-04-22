@@ -1,6 +1,0 @@
-training:
-  batch_size: 22
-resources:
-  accelerators:
-    - type: t4
-      count: 1

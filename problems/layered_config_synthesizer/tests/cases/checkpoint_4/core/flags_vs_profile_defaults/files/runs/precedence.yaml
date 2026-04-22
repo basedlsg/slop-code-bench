@@ -1,7 +1,0 @@
-experiment_name: precedence_run
-training:
-  optimizer:
-    name: adamw
-    beta2: 0.99
-resources:
-  world_size: 4

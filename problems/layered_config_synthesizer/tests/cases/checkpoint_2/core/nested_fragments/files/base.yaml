@@ -1,7 +1,0 @@
-experiment_name: nested-run
-training:
-  optimizer: adam
-resources:
-  profile: nested
-  world_size: 3
-monitoring: "{{fragment:monitoring_stack}}"

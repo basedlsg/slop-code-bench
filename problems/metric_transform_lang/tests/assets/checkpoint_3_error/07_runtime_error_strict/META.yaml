@@ -1,4 +1,0 @@
-
-expected:
-  status_code: 4
-  stderr: ERROR:runtime_error:.*

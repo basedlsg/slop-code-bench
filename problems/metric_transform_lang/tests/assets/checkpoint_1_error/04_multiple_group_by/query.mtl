@@ -1,3 +1,0 @@
-group_by(location)
-group_by(category)
-aggregate count(*) as n

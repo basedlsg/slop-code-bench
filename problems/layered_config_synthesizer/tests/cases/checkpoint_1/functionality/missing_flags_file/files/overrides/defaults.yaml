@@ -1,4 +1,0 @@
-training:
-  batch_size: 16
-resources:
-  world_size: 2

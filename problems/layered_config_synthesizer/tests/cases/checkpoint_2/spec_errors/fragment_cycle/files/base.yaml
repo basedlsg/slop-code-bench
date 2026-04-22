@@ -1,7 +1,0 @@
-experiment_name: cycle
-training:
-  optimizer: adam
-resources:
-  profile: cyc
-  world_size: 2
-logging: "{{fragment:a}}"

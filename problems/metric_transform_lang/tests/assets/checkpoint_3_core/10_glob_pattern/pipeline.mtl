@@ -1,8 +1,0 @@
-schema Sale {
-  timestamp: timestamp
-  amount: float
-}
-
-pipeline GlobTest using Sale {
-  aggregate sum(amount) as total, count(*) as n
-}

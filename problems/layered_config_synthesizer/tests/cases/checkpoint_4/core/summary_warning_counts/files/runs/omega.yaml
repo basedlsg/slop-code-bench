@@ -1,9 +1,0 @@
-experiment_name: omega
-metadata:
-  owner: ml
-training:
-  optimizer:
-    name: adamw
-  extra: yes
-resources:
-  world_size: 4

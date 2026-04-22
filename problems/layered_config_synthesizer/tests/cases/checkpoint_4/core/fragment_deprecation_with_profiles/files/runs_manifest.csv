@@ -1,3 +1,0 @@
-run_id,override_path,flags_path,notes
-frag_a,runs/a.yaml,,deprecated frag
-frag_b,runs/b.yaml,,deprecated frag

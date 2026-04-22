@@ -1,8 +1,0 @@
-mtl_version 1.5
-schema BaseSale {
-  timestamp: timestamp
-}
-
-pipeline CountTSV using BaseSale {
-  aggregate count(*) as n
-}

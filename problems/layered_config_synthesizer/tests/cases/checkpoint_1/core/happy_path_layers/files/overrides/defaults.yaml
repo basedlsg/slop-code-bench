@@ -1,4 +1,0 @@
-training:
-  batch_size: 16
-resources:
-  profile: standard

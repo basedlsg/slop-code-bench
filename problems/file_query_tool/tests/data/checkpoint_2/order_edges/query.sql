@@ -1,3 +1,0 @@
-SELECT car
-FROM u1
-LIMIT 1

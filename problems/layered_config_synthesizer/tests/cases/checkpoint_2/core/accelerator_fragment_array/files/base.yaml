@@ -1,5 +1,0 @@
-experiment_name: gpu-frag
-training:
-  optimizer: adam
-resources:
-  accelerators: "{{fragment:gpu_pool}}"

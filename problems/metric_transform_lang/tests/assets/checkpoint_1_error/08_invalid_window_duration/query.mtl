@@ -1,2 +1,0 @@
-window(1x)
-aggregate count(*) as n

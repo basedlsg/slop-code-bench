@@ -1,8 +1,0 @@
-experiment_name: flag-stack
-training:
-  optimizer: adam
-  learning_rate: 0.01
-resources:
-  accelerators:
-    - type: v100
-      count: 2

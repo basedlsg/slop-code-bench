@@ -1,8 +1,0 @@
-experiment_name: conflict-stack
-training:
-  checkpoint: true
-  logging: INFO
-resources:
-  accelerators:
-    - type: a10
-      count: 1

@@ -1,3 +1,0 @@
-filter('apple' in item)
-aggregate count(*) as n,
-          sum(price) as total

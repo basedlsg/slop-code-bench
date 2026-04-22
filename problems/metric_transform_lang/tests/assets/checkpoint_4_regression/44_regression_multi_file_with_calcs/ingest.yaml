@@ -1,8 +1,0 @@
-sources:
-  - name: main
-    inputs:
-      - "file1.csv"
-      - "file2.csv"
-    format: auto
-    schema: Sale
-    precedence: 10

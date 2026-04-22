@@ -1,2 +1,0 @@
-aggregate median(price) as median_price,
-          median(quantity) as median_qty

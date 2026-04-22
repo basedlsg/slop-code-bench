@@ -1,8 +1,0 @@
-training:
-  batch_size: 64
-  optimizer:
-    name: adamw
-    weight_decay: 0.01
-  scheduler: cosine
-resources:
-  world_size: 8

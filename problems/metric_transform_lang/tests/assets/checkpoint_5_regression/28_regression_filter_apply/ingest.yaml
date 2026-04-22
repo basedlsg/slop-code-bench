@@ -1,7 +1,0 @@
-sources:
-  - name: main
-    inputs:
-      - "input.csv"
-    format: auto
-    schema: Event
-    precedence: 10

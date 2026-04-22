@@ -1,8 +1,0 @@
-sources:
-  - name: main
-    inputs:
-      - "input.csv"
-      - "min_qty=3.0"
-    format: auto
-    schema: BaseSale
-    precedence: 10

@@ -1,9 +1,0 @@
-experiment_name: anchor-run
-training:
-  optimizer: adam
-resources:
-  accelerators:
-    - &accel
-      type: l4
-      count: 1
-    - *accel

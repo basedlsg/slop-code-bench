@@ -1,1 +1,0 @@
---input data.csv --input data.tsv --dsl pipeline.mtl --format auto

@@ -1,5 +1,0 @@
-aggregate std(price) as price_std,
-          var(price) as price_var,
-          std(quantity) as qty_std,
-          var(quantity) as qty_var,
-          count(*) as n

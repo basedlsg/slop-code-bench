@@ -1,2 +1,0 @@
-CONFLICT combo /training/optimizer runs/combo.yaml -> run_flags/combo.json
-CONFLICT combo /training/optimizer run_flags/combo.json -> flags.json

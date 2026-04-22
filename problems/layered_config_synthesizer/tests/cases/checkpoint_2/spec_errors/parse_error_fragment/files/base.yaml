@@ -1,7 +1,0 @@
-experiment_name: bad-fragment
-training:
-  optimizer: adam
-resources:
-  profile: frag
-  world_size: 2
-logging: "{{fragment:broken}}"

@@ -1,6 +1,0 @@
-training:
-  batch_size: 48
-resources:
-  accelerators:
-    - type: h100
-      count: 4

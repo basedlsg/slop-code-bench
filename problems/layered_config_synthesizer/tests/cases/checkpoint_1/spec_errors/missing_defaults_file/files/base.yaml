@@ -1,5 +1,0 @@
-experiment_name: no-defaults
-training:
-  optimizer: adam
-resources:
-  profile: nope

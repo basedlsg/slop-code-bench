@@ -39,6 +39,10 @@ These options are available on all commands:
 Problem catalog location is controlled by the `SCBENCH_HOME` environment
 variable. If unset, it defaults to `~/.cache/scbench`.
 
+Set `SCBENCH_PROBLEMS_PATH` to point at a flat local problems directory
+(each direct child must contain `config.yaml`) to bypass the managed release
+catalog for problem-loading commands.
+
 Problem catalog behavior:
 - First problem-using command bootstraps the latest release if no catalog is installed yet.
 - Commands do not auto-update once installed; run `slop-code sync` explicitly.

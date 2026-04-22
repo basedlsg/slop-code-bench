@@ -1,3 +1,0 @@
-window(7d)
-aggregate count(*) as n,
-          sum(price) as total

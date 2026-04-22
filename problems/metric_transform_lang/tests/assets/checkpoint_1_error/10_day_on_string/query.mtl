@@ -1,2 +1,0 @@
-apply(day(category), cat_day)
-aggregate count(*) as n

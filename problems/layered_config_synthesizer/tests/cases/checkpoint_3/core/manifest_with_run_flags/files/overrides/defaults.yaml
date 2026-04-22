@@ -1,6 +1,0 @@
-training:
-  batch_size: 16
-resources:
-  accelerators:
-    - type: a10
-      count: 2

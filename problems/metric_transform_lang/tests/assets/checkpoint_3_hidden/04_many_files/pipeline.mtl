@@ -1,8 +1,0 @@
-schema Event {
-  timestamp: timestamp
-  value: float
-}
-
-pipeline ManyFiles using Event {
-  aggregate sum(value) as total, count(*) as n
-}

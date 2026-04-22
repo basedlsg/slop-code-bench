@@ -1,9 +1,0 @@
-experiment_name: legacy-run
-training:
-  optimizer: adam
-resources:
-  profile: legacy
-  world_size: 2
-logging:
-  realtime: "{{fragment:legacy_logger}}"
-  batch: "{{fragment:legacy_logger}}"

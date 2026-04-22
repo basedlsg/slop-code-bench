@@ -1,7 +1,0 @@
-experiment_name: missing-frag
-training:
-  optimizer: adam
-resources:
-  profile: missing
-  world_size: 2
-logging: "{{fragment:nope}}"

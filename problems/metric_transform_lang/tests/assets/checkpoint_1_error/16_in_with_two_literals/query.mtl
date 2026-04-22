@@ -1,2 +1,0 @@
-filter('apple' in 'fruit')
-aggregate count(*) as n

@@ -1,1 +1,0 @@
---dsl pipeline.mtl --ingest-config ingest.yaml --out out.json

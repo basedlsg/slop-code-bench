@@ -1,6 +1,0 @@
-training:
-  optimizer: adam
-resources:
-  accelerators:
-    - type: a10
-      count: 1

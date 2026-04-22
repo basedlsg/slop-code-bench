@@ -1,3 +1,0 @@
-window(1h)
-group_by(category)
-aggregate count(*) as n

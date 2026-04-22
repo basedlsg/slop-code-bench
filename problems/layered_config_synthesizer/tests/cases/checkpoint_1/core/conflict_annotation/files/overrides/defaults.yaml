@@ -1,5 +1,0 @@
-training:
-  checkpoint: nightly
-resources:
-  profile: conflict
-  world_size: 2

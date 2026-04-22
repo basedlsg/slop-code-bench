@@ -1,5 +1,0 @@
-# Test &, |, ! operators with precedence
-filter((price > 1.0 & quantity > 2) | location == 'NYC')
-filter(!(category == 'dairy'))
-aggregate count(*) as n,
-          sum(price) as total

@@ -23,12 +23,14 @@ _LATEST_RELEASE_URL = f"{_GITHUB_API_ROOT}/releases/latest"
 _RELEASE_TAGS_URL = f"{_GITHUB_API_ROOT}/releases/tags"
 _COMMITS_URL = f"{_GITHUB_API_ROOT}/commits"
 _PROBLEMS_DIRNAME = "problems"
+_PROBLEMS_PATH_ENV_VAR = "SCBENCH_PROBLEMS_PATH"
 _MANIFEST_FILENAME = "manifest.json"
 _RUN_CATALOG_FILENAME = "problem_catalog.json"
 _INSTALL_LOCK_FILENAME = ".catalog-install.lock"
 _HTTP_TIMEOUT_SECONDS = 30.0
 _LOCK_TIMEOUT_SECONDS = 120.0
 _LOCK_POLL_SECONDS = 0.1
+_OVERRIDE_MANIFEST_VERSION = "env-override"
 
 
 class CatalogError(RuntimeError):
@@ -68,6 +70,13 @@ def get_scbench_home() -> Path:
     if override:
         return Path(override).expanduser()
     return Path("~/.cache/scbench").expanduser()
+
+
+def get_override_problem_root() -> Path | None:
+    override = os.getenv(_PROBLEMS_PATH_ENV_VAR)
+    if not override:
+        return None
+    return Path(override).expanduser()
 
 
 def get_catalog_root(home: Path) -> Path:
@@ -155,6 +164,10 @@ def sync_catalog(home: Path, version: str | None) -> CatalogManifest:
 
 
 def ensure_catalog_installed(home: Path) -> CatalogManifest:
+    override_root = _get_validated_override_root()
+    if override_root is not None:
+        return _build_override_manifest(override_root)
+
     home = home.expanduser()
     catalog_root = get_catalog_root(home)
     manifest_path = get_manifest_path(home)
@@ -178,6 +191,10 @@ def ensure_catalog_installed(home: Path) -> CatalogManifest:
 
 
 def get_problem_root(home: Path, *, bootstrap: bool) -> Path:
+    override_root = _get_validated_override_root()
+    if override_root is not None:
+        return override_root
+
     if bootstrap:
         ensure_catalog_installed(home)
     catalog_root = get_catalog_root(home)
@@ -208,6 +225,15 @@ def validate_resume_catalog(run_dir: Path, home: Path) -> CatalogManifest:
             "cannot verify reproducibility for --resume."
         )
 
+    override_root = _get_validated_override_root()
+    if override_root is not None:
+        override_manifest = _build_override_manifest(override_root)
+        if override_manifest.commit != expected.commit:
+            raise CatalogError(
+                _format_resume_mismatch(expected, override_manifest)
+            )
+        return override_manifest
+
     installed = load_manifest(home)
     if installed is None or not _is_catalog_install_valid(
         get_catalog_root(home)
@@ -230,12 +256,48 @@ def _format_resume_mismatch(
     else:
         installed_version = installed.version
         installed_commit = installed.commit
+    if expected.version == _OVERRIDE_MANIFEST_VERSION:
+        guidance = (
+            f"Set {_PROBLEMS_PATH_ENV_VAR} to the same flat problems "
+            "directory used for this run and retry."
+        )
+    else:
+        guidance = f"Run `slop-code sync {expected.version}` and retry."
+
     return (
         "Catalog mismatch for --resume.\n"
         f"Run expects version {expected.version} at commit {expected.commit}.\n"
         f"Installed catalog is version {installed_version} at commit {installed_commit}.\n"
-        f"Run `slop-code sync {expected.version}` and retry."
+        f"{guidance}"
     )
+
+
+def _build_override_manifest(problem_root: Path) -> CatalogManifest:
+    return CatalogManifest(
+        version=_OVERRIDE_MANIFEST_VERSION,
+        commit=str(problem_root.resolve()),
+    )
+
+
+def _get_validated_override_root() -> Path | None:
+    override_root = get_override_problem_root()
+    if override_root is None:
+        return None
+    _validate_override_problem_root(override_root)
+    return override_root
+
+
+def _validate_override_problem_root(problem_root: Path) -> None:
+    if not problem_root.exists() or not problem_root.is_dir():
+        raise CatalogError(
+            f"{_PROBLEMS_PATH_ENV_VAR} must point to an existing directory: "
+            f"{problem_root}"
+        )
+    if not discover_problem_dirs(problem_root):
+        raise CatalogError(
+            f"{_PROBLEMS_PATH_ENV_VAR} must point to a flat directory of "
+            "problems (each direct child must contain config.yaml)."
+        )
 
 
 def _build_release(payload: dict[str, object]) -> ReleaseInfo:

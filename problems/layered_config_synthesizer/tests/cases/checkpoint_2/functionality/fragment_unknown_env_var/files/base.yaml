@@ -1,7 +1,0 @@
-experiment_name: frag-env
-training:
-  optimizer: adam
-resources:
-  profile: standard
-  world_size: 1
-logging: "{{fragment:templated}}"

@@ -1,3 +1,0 @@
-run_id,override_path,flags_path,notes
-good,runs/good.yaml,,ok
-broken,runs/broken.yaml,,two schema errors

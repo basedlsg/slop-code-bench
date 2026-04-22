@@ -1,8 +1,0 @@
-schema BaseSale {
-  timestamp: timestamp
-}
-
-pipeline P using BaseSale {
-  calc bad = n : int @stage(pre)
-  aggregate count(*) as n
-}

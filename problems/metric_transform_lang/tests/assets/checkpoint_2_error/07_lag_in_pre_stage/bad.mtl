@@ -1,9 +1,0 @@
-schema Sale {
-  timestamp: timestamp
-  price: float
-}
-
-pipeline BadLag using Sale {
-  calc prev_price = lag(price, 1) : float @stage(pre)
-  aggregate count(*) as n
-}

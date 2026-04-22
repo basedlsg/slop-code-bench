@@ -1,8 +1,0 @@
-# This is a comment
-filter(price > 0.5)
-
-# Another comment
-
-aggregate count(*) as n,
-          sum(price) as total
-# Final comment

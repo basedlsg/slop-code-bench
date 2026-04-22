@@ -1,1 +1,0 @@
---output out --key id --partition-by state,city data.csv

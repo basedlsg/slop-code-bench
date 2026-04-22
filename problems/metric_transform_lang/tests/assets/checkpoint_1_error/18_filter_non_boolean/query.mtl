@@ -1,2 +1,0 @@
-filter(price)
-aggregate count(*) as n

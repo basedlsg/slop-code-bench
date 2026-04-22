@@ -1,5 +1,0 @@
-experiment_name: second-run
-training:
-  optimizer: adam
-resources:
-  profile: standard

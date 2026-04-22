@@ -11,6 +11,9 @@ The CLI reads problems from the managed catalog under `SCBENCH_HOME/problems`
 (default: `~/.cache/scbench/problems`). Install or update catalog data with
 `slop-code sync`.
 
+If `SCBENCH_PROBLEMS_PATH` is set, these commands read problems from that
+flat local directory instead of the managed release catalog.
+
 ## Subcommands
 
 | Command | Description |

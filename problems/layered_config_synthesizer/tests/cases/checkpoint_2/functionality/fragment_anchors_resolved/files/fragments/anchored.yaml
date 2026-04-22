@@ -1,4 +1,0 @@
-defaults: &defaults
-  format: json
-  level: INFO
-nested: *defaults

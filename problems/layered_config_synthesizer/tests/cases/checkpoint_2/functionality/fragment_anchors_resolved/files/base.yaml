@@ -1,7 +1,0 @@
-experiment_name: anchor-fragment
-training:
-  optimizer: adam
-resources:
-  profile: standard
-  world_size: 1
-logging: "{{fragment:anchored}}"

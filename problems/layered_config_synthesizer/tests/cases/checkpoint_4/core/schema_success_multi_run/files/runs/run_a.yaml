@@ -1,4 +1,0 @@
-experiment_name: multi_a
-logging: "{{fragment:logger}}"
-resources:
-  world_size: 4

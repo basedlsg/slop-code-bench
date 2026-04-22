@@ -1,3 +1,0 @@
-run_id,override_path,flags_path,notes
-delta,runs/delta.yaml,,uses fragment
-echo,runs/echo.yaml,,env stage

@@ -1,3 +1,0 @@
-group_by([location, item])
-aggregate sum(price) as total_price,
-          count(*) as n

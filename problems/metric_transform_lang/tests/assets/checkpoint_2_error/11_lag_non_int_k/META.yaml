@@ -1,4 +1,0 @@
-
-expected:
-  status_code: 2
-  stderr: ERROR:type_error:.*int.*
