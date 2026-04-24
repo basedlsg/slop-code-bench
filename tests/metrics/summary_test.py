@@ -183,6 +183,40 @@ class TestRunSummarySolveRates:
         # Only 1 problem fully solved
         assert summary.pct_problems_solved == 50.0
 
+    def test_incomplete_problem_is_not_fully_solved(self, mock_config):
+        """Missing later checkpoints prevent a problem from being fully solved."""
+        checkpoints = [
+            {
+                "problem": "crashed_after_first",
+                "idx": 1,
+                "is_last": False,
+                "strict_pass_rate": 1.0,
+                "isolated_pass_rate": 1.0,
+            },
+            {
+                "problem": "finished",
+                "idx": 1,
+                "is_last": False,
+                "strict_pass_rate": 1.0,
+                "isolated_pass_rate": 1.0,
+            },
+            {
+                "problem": "finished",
+                "idx": 2,
+                "is_last": True,
+                "strict_pass_rate": 1.0,
+                "isolated_pass_rate": 1.0,
+            },
+        ]
+        summary = compute_run_summary(
+            mock_config,
+            checkpoints,
+            expected_checkpoints=4,
+        )
+
+        assert summary.problem_solved == 1
+        assert summary.pct_problems_solved == 50.0
+
     def test_computes_partial_solve_rate(self, mock_config):
         """Test that summary computes partial solve rate correctly."""
         checkpoints = [

@@ -125,6 +125,17 @@ def compute_steps_stats(
     )
 
 
+def _is_problem_fully_solved(chkpts: list[dict[str, Any]]) -> bool:
+    rates = [c.get("strict_pass_rate", 0.0) for c in chkpts]
+    if not rates or not all(math.isclose(pr, 1.0) for pr in rates):
+        return False
+
+    if any("is_last" in c for c in chkpts):
+        return any(c.get("is_last") is True for c in chkpts)
+
+    return True
+
+
 def compute_solve_rates(
     checkpoints: list[dict[str, Any]],
     problems: dict[str, list[dict[str, Any]]],
@@ -171,10 +182,7 @@ def compute_solve_rates(
 
     # Count problems fully vs partially solved
     fully_solved = sum(
-        1
-        for chkpts in problems.values()
-        if (rates := [c.get("strict_pass_rate", 0.0) for c in chkpts])
-        and all(pr == 1.0 for pr in rates)
+        1 for chkpts in problems.values() if _is_problem_fully_solved(chkpts)
     )
     partially_solved = sum(
         1
@@ -238,18 +246,20 @@ def compute_pass_rates_stats(
         t: [] for t in test_types
     }
     for chkpt in checkpoints:
-        rates = compute_pass_rates_by_type(chkpt)
+        checkpoint_rates = compute_pass_rates_by_type(chkpt)
         for test_type in test_types:
-            checkpoint_pass_rates[test_type].append(rates[test_type])
+            checkpoint_pass_rates[test_type].append(checkpoint_rates[test_type])
 
     # Collect problem-level pass rates (mean across checkpoints per problem, excluding None)
     problem_pass_rates: dict[str, list[float]] = {t: [] for t in test_types}
     for problem_chkpts in problems.values():
         for test_type in test_types:
-            rates = [
+            rates_for_problem = [
                 compute_pass_rates_by_type(c)[test_type] for c in problem_chkpts
             ]
-            problem_pass_rates[test_type].append(mean_excluding_none(rates))
+            problem_pass_rates[test_type].append(
+                mean_excluding_none(rates_for_problem)
+            )
 
     return PassRatesStats(
         checkpoint=PassRatesByType(
