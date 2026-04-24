@@ -15,7 +15,7 @@
 **SlopCodeBench** evaluates coding agents under iterative specification refinement: the agent implements a spec, then extends its own code as the spec changes. This exposes behaviors that single-shot benchmarks cannot measure, including path dependence, non-convergence, and trade-offs between explicit handling and structural stability. We release SCBench as an open, community-driven evaluation primitive rather than a finalized benchmark.
 
 
-We actively want more problems, follow [the creating a problem guide and create a pr!](/docs/contributing-problems/).
+Problem definitions now live in the separate [scb-problems repository](https://github.com/gabeorlanski/scb-problems) and are also available as a [Harbor dataset](https://registry.harborframework.com/datasets/gabeorlanski/slopcodebench/latest). We actively want more problems; follow [the creating a problem guide](/docs/contributing-problems/) and open a PR there.
 
 > [!NOTE]
 > This is an initial release. We're actively developing and welcome feedback via [GitHub Issues](https://github.com/SprocketLab/slop-code-bench/issues).
@@ -104,7 +104,7 @@ slop-code metrics judge \
 
 We welcome contributions. Two ways to help:
 
-- **Add problems** — Expand the benchmark with new evaluation scenarios. See the [Problem Tutorial](docs/problems/tutorial.md) and [Contributing Guide](CONTRIBUTING.md).
+- **Add problems** — Expand the benchmark with new evaluation scenarios in the [scb-problems repository](https://github.com/gabeorlanski/scb-problems), also published as a [Harbor dataset](https://registry.harborframework.com/datasets/gabeorlanski/slopcodebench/latest). See the [Problem Tutorial](docs/problems/tutorial.md) and [Contributing Guide](CONTRIBUTING.md).
 - **Add agents** — Integrate new coding agents. See the [Agent Guide](docs/agents/README.md) and [Contributing Guide](CONTRIBUTING.md).
 
 This is early-stage software. Your contributions will shape its direction.
