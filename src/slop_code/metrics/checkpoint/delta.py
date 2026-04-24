@@ -86,7 +86,7 @@ def compute_checkpoint_delta(
     except KeyError:
         churn = None
 
-    prev_total_lines = prev_metrics["total_lines"]
+    prev_total_lines = prev_metrics.get("total_lines", 0)
     result["delta.churn_ratio"] = safe_ratio(churn, prev_total_lines)
 
     return result

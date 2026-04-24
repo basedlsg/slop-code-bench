@@ -259,6 +259,73 @@ def bad():
         assert result.total_violations == 2
         assert result.counts == {"test-rule": 2}
 
+    def test_filters_min_file_count_rules_until_threshold_exceeded(
+        self, tmp_path: Path
+    ) -> None:
+        source = _write(tmp_path, "test.py", "x = 1")
+        rules_path = tmp_path / "rules.yaml"
+        rules_path.write_text(
+            "---\n"
+            "id: threshold-rule\n"
+            "metadata:\n"
+            "  min_file_count: 2\n"
+            "---\n"
+            "id: noisy-rule\n"
+            "metadata:\n"
+            "  min_file_count: 2\n"
+            "---\n"
+            "id: regular-rule\n"
+        )
+
+        mock_output = "\n".join(
+            [
+                '{"ruleId": "threshold-rule", "severity": "warning", '
+                '"range": {"start": {"line": 1, "column": 0}, '
+                '"end": {"line": 1, "column": 5}}}',
+                '{"ruleId": "threshold-rule", "severity": "warning", '
+                '"range": {"start": {"line": 2, "column": 0}, '
+                '"end": {"line": 2, "column": 5}}}',
+                '{"ruleId": "noisy-rule", "severity": "warning", '
+                '"range": {"start": {"line": 3, "column": 0}, '
+                '"end": {"line": 3, "column": 5}}}',
+                '{"ruleId": "noisy-rule", "severity": "warning", '
+                '"range": {"start": {"line": 4, "column": 0}, '
+                '"end": {"line": 4, "column": 5}}}',
+                '{"ruleId": "noisy-rule", "severity": "warning", '
+                '"range": {"start": {"line": 5, "column": 0}, '
+                '"end": {"line": 5, "column": 5}}}',
+                '{"ruleId": "regular-rule", "severity": "warning", '
+                '"range": {"start": {"line": 6, "column": 0}, '
+                '"end": {"line": 6, "column": 5}}}',
+            ]
+        )
+
+        with (
+            patch(
+                "slop_code.metrics.languages.python.ast_grep.shutil.which",
+                return_value="/usr/bin/sg",
+            ),
+            patch.dict("os.environ", {"AST_GREP_RULES_PATH": str(rules_path)}),
+            patch(
+                "slop_code.metrics.languages.python.ast_grep.subprocess.run"
+            ) as mock_run,
+        ):
+            mock_run.return_value = MagicMock(
+                stdout=mock_output,
+                stderr="",
+                returncode=0,
+            )
+            result = calculate_ast_grep_metrics(source)
+
+        assert result.total_violations == 4
+        assert result.counts == {"noisy-rule": 3, "regular-rule": 1}
+        assert [violation.rule_id for violation in result.violations] == [
+            "noisy-rule",
+            "noisy-rule",
+            "noisy-rule",
+            "regular-rule",
+        ]
+
     def test_counts_multiple_rules_in_one_file(self, tmp_path: Path) -> None:
         source = _write(tmp_path, "test.py", "x = 1")
         rules_path = tmp_path / "rules.yaml"

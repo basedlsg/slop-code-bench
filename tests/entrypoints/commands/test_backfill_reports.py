@@ -10,6 +10,9 @@ from slop_code.entrypoints.commands import (
     backfill_reports as backfill_reports_module,
 )
 from slop_code.entrypoints.commands.backfill_reports import (
+    _recategorize_evaluation_tests,
+)
+from slop_code.entrypoints.commands.backfill_reports import (
     _update_ast_grep_jsonl,
 )
 
@@ -82,6 +85,35 @@ def test_update_ast_grep_jsonl_filters_out_unknown_rules(
     assert overall["ast_grep"]["violations"] == 1
     assert overall["ast_grep"]["category_counts"] == {"slop": 1}
     assert overall["ast_grep"]["category_weighted"] == {"slop": 4}
+
+
+def test_recategorize_evaluation_tests_dict_format_excludes_skipped_from_counts(
+    tmp_path: Path,
+) -> None:
+    eval_path = tmp_path / "evaluation.json"
+    eval_path.write_text(
+        json.dumps(
+            {
+                "checkpoint_name": "checkpoint_1",
+                "pass_counts": {"Core": 1},
+                "total_counts": {"Core": 3},
+                "tests": {
+                    "checkpoint_1-Core": {
+                        "passed": ["test_pass"],
+                        "failed": ["test_fail"],
+                        "skipped": ["test_skip"],
+                    }
+                },
+            }
+        )
+    )
+
+    updated = _recategorize_evaluation_tests(eval_path, MagicMock())
+
+    data = json.loads(eval_path.read_text())
+    assert updated is True
+    assert data["pass_counts"] == {"Core": 1}
+    assert data["total_counts"] == {"Core": 2}
 
 
 def test_backfill_reports_preserves_costs_for_all_agents(

@@ -101,6 +101,9 @@ def test_get_problem_root_uses_env_override_without_bootstrap(
     problem_dir = local_root / "alpha"
     problem_dir.mkdir(parents=True)
     (problem_dir / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    (local_root / "scripts").mkdir(parents=True)
+    (local_root / "tmp").mkdir(parents=True)
+    (local_root / ".agents" / "skills").mkdir(parents=True)
     monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
     monkeypatch.setattr(
         problem_catalog,
@@ -112,6 +115,7 @@ def test_get_problem_root_uses_env_override_without_bootstrap(
 
     resolved = problem_catalog.get_problem_root(home, bootstrap=True)
     assert resolved == local_root
+    assert problem_catalog.discover_problem_dirs(resolved) == [problem_dir]
 
 
 def test_get_problem_root_env_override_requires_flat_problem_dirs(
@@ -141,6 +145,7 @@ def test_ensure_catalog_installed_uses_env_override_without_sync(
     problem_dir = local_root / "alpha"
     problem_dir.mkdir(parents=True)
     (problem_dir / "config.yaml").write_text("name: alpha\n", encoding="utf-8")
+    (local_root / "scripts").mkdir(parents=True)
     monkeypatch.setenv("SCBENCH_PROBLEMS_PATH", str(local_root))
     monkeypatch.setattr(
         problem_catalog,
@@ -262,7 +267,7 @@ def test_sync_catalog_installs_only_valid_problem_dirs(
     _create_release_tarball(
         tarball,
         valid_problem_names=["alpha", "beta"],
-        extra_dirs=["docs"],
+        extra_dirs=["docs", "scripts", "tmp"],
     )
     monkeypatch.setattr(
         problem_catalog,
@@ -292,6 +297,8 @@ def test_sync_catalog_installs_only_valid_problem_dirs(
     ]
     assert not (catalog_root / "README.md").exists()
     assert not (catalog_root / "docs").exists()
+    assert not (catalog_root / "scripts").exists()
+    assert not (catalog_root / "tmp").exists()
 
     manifest_data = json.loads(
         problem_catalog.get_manifest_path(home).read_text(encoding="utf-8")

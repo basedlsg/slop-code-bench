@@ -7,6 +7,7 @@ Tests all functions in slop_code.metrics.languages.python.redundancy including:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from textwrap import dedent
 
 import pytest
@@ -92,26 +93,44 @@ class TestCalculateRedundancyMetrics:
         assert metrics.clones
         assert metrics.total_clone_instances >= 2
 
-    def test_different_literals_not_clones(self, tmp_path):
-        """Test that code with different literals is not detected as clones."""
-        source = tmp_path / "different.py"
+    def test_operator_changes_are_not_clones(self, tmp_path):
+        """Different arithmetic operators do not form structural clones."""
+        source = tmp_path / "operators.py"
         source.write_text(
             dedent("""
-        def get_one():
-            return 1
+        def add(left, right):
+            result = left + right
+            return result
 
-        def get_two():
-            return 2
-
-        def get_three():
-            return 3
+        def subtract(left, right):
+            result = left - right
+            return result
         """)
         )
 
         metrics = calculate_redundancy_metrics(source)
 
-        # Different literals = different hashes = no clones
-        # (depends on implementation - literals may or may not differentiate)
+        assert metrics.clones == []
+        assert metrics.total_clone_instances == 0
+
+    def test_normalizes_literals_for_clone_detection(self, tmp_path):
+        """Renamed variables and changed literals form structural clones."""
+        source = tmp_path / "literals.py"
+        source.write_text(
+            dedent("""
+        def first(left, right):
+            result = left + 1
+            return result
+
+        def second(alpha, beta):
+            total = alpha + 2
+            return total
+        """)
+        )
+
+        metrics = calculate_redundancy_metrics(source)
+
+        assert metrics.total_clone_instances == 2
 
     def test_minimum_line_threshold(self, tmp_path):
         """Test that clones below minimum line threshold are not detected."""
@@ -124,7 +143,7 @@ class TestCalculateRedundancyMetrics:
         """)
         )
 
-        metrics = calculate_redundancy_metrics(source)
+        calculate_redundancy_metrics(source)
 
         # Single-line functions shouldn't be detected as clones
         # (depends on min_lines setting)
@@ -417,33 +436,77 @@ class TestRedundancyEdgeCases:
         source = tmp_path / "broken.py"
         source.write_text("def broken(:\n    pass\n")
 
-        # Should handle gracefully
-        try:
-            metrics = calculate_redundancy_metrics(source)
-            # If it returns, should have empty/zero metrics
-        except Exception:
-            # Or it may raise an exception, which is also acceptable
-            pass
+        # Should handle gracefully. If it returns, metrics should be empty/zero;
+        # raising is also acceptable for malformed source.
+        with suppress(Exception):
+            calculate_redundancy_metrics(source)
 
-    def test_docstrings_not_clones(self, tmp_path):
-        """Test that similar docstrings don't create false clones."""
+    def test_docstrings_do_not_make_short_functions_clones(self, tmp_path):
+        """Docstring lines do not count toward clone candidate size."""
         source = tmp_path / "docs.py"
         source.write_text(
             dedent('''
-        def func_a():
-            """Process data and return result."""
-            return 1
+        import math
 
-        def func_b():
-            """Process data and return result."""
-            return 2
+        class Metrics:
+            def cc_mass(self) -> float:
+                """Return the cyclomatic complexity mass."""
+                return self.cyc_complexity * math.sqrt(self.sloc)
+
+            def cog_mass(self) -> float:
+                """Return the cognitive complexity mass."""
+                return self.cog_complexity * math.sqrt(self.sloc)
         ''')
         )
 
         metrics = calculate_redundancy_metrics(source)
 
-        # Docstrings alone shouldn't make these clones
-        # (function bodies are different)
+        assert metrics.clones == []
+        assert metrics.total_clone_instances == 0
+
+    def test_docstrings_do_not_affect_clone_hash(self, tmp_path):
+        """Docstring presence does not change clone structure."""
+        source = tmp_path / "hash_docs.py"
+        source.write_text(
+            dedent('''
+        def first(value):
+            """Explain the first function."""
+            current = value + 1
+            doubled = current * 2
+            return doubled
+
+        def second(value):
+            current = value + 2
+            doubled = current * 2
+            return doubled
+        ''')
+        )
+
+        metrics = calculate_redundancy_metrics(source)
+
+        assert metrics.total_clone_instances == 2
+
+    def test_type_checking_import_blocks_are_not_clones(self, tmp_path):
+        """TYPE_CHECKING import blocks are excluded from clone detection."""
+        source = tmp_path / "type_checking.py"
+        source.write_text(
+            dedent("""
+        from typing import TYPE_CHECKING
+
+        if TYPE_CHECKING:
+            from one import Thing
+            from two import Other
+
+        if TYPE_CHECKING:
+            from one import Thing
+            from two import Other
+        """)
+        )
+
+        metrics = calculate_redundancy_metrics(source)
+
+        assert metrics.clones == []
+        assert metrics.total_clone_instances == 0
 
     def test_imports_not_clones(self, tmp_path):
         """Test that similar imports don't create false clones."""
@@ -458,6 +521,6 @@ class TestRedundancyEdgeCases:
         """)
         )
 
-        metrics = calculate_redundancy_metrics(source)
+        calculate_redundancy_metrics(source)
 
         # Imports shouldn't be marked as clones

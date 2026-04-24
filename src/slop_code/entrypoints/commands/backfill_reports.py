@@ -168,7 +168,7 @@ def _process_single_run_backfill(
     )
     if eval_updated > 0:
         logger.info(
-            "Fixed evaluation.json group types",
+            "Backfilled evaluation.json test metadata",
             files_updated=eval_updated,
             files_processed=eval_files,
         )
@@ -419,10 +419,32 @@ def _backfill_ast_grep_for_run(
     return files_processed, total_violations, total_updated
 
 
+def _recalculate_evaluation_counts_dict(data: dict) -> bool:
+    """Recalculate pass/total counts from grouped tests, excluding skipped."""
+    pass_counts: dict[str, int] = {}
+    total_counts: dict[str, int] = {}
+
+    for key, test_data in data["tests"].items():
+        # Extract group type from key: "checkpoint_1-Regression" -> "Regression"
+        group_type = key.rsplit("-", 1)[1]
+        passed = len(test_data.get("passed", []))
+        failed = len(test_data.get("failed", []))
+        total = passed + failed
+
+        pass_counts[group_type] = pass_counts.get(group_type, 0) + passed
+        total_counts[group_type] = total_counts.get(group_type, 0) + total
+
+    old_counts = (data.get("pass_counts", {}), data.get("total_counts", {}))
+    new_counts = (pass_counts, total_counts)
+    data["pass_counts"] = pass_counts
+    data["total_counts"] = total_counts
+    return old_counts != new_counts
+
+
 def _recategorize_evaluation_tests_dict_format(
     data: dict, checkpoint_name: str, logger: Any
 ) -> bool:
-    """Recategorize Error tests in new dict format (grouped by checkpoint-GroupType).
+    """Recategorize Error tests and refresh counts for grouped tests.
 
     Args:
         data: Parsed evaluation.json data (modified in place).
@@ -448,9 +470,6 @@ def _recategorize_evaluation_tests_dict_format(
             # This Error group is from a prior checkpoint - should be Regression
             keys_to_move.append((key, test_checkpoint))
 
-    if not keys_to_move:
-        return False
-
     # Move tests from Error to Regression buckets
     for error_key, test_checkpoint in keys_to_move:
         regression_key = f"{test_checkpoint}-Regression"
@@ -460,6 +479,9 @@ def _recategorize_evaluation_tests_dict_format(
         if regression_key in tests:
             tests[regression_key]["passed"].extend(error_data["passed"])
             tests[regression_key]["failed"].extend(error_data["failed"])
+            tests[regression_key].setdefault("skipped", []).extend(
+                error_data.get("skipped", [])
+            )
         else:
             tests[regression_key] = error_data
 
@@ -471,88 +493,16 @@ def _recategorize_evaluation_tests_dict_format(
             failed=len(error_data["failed"]),
         )
 
-    # Recalculate pass_counts and total_counts from tests dict
-    pass_counts: dict[str, int] = {}
-    total_counts: dict[str, int] = {}
-
-    for key, test_data in tests.items():
-        # Extract group type from key: "checkpoint_1-Regression" -> "Regression"
-        group_type = key.rsplit("-", 1)[1]
-        passed = len(test_data.get("passed", []))
-        failed = len(test_data.get("failed", []))
-        total = passed + failed
-
-        pass_counts[group_type] = pass_counts.get(group_type, 0) + passed
-        total_counts[group_type] = total_counts.get(group_type, 0) + total
-
-    data["pass_counts"] = pass_counts
-    data["total_counts"] = total_counts
-
-    return True
-
-
-def _recategorize_evaluation_tests_list_format(
-    data: dict, checkpoint_name: str, logger: Any
-) -> bool:
-    """Recategorize Error tests in old list format (individual test objects).
-
-    Args:
-        data: Parsed evaluation.json data (modified in place).
-        checkpoint_name: Current checkpoint name.
-        logger: Logger instance.
-
-    Returns:
-        True if changes were made, False otherwise.
-    """
-    tests = data["tests"]
-    changes_made = False
-    updated_count = 0
-
-    for test in tests:
-        test_checkpoint = test.get("checkpoint", "")
-        group_type = test.get("group_type", "")
-
-        # If this is an Error test from a prior checkpoint, change to Regression
-        if test_checkpoint != checkpoint_name and group_type == "Error":
-            test["group_type"] = "Regression"
-            changes_made = True
-            updated_count += 1
-
-    if not changes_made:
-        return False
-
-    logger.debug(
-        "Recategorized Error tests to Regression (list format)",
-        updated_count=updated_count,
-    )
-
-    # Recalculate pass_counts and total_counts from tests list
-    pass_counts: dict[str, int] = {}
-    total_counts: dict[str, int] = {}
-
-    for test in tests:
-        group_type = test.get("group_type", "Core")
-        status = test.get("status", "failed")
-
-        total_counts[group_type] = total_counts.get(group_type, 0) + 1
-        if status == "passed":
-            pass_counts[group_type] = pass_counts.get(group_type, 0) + 1
-
-    data["pass_counts"] = pass_counts
-    data["total_counts"] = total_counts
-
-    return True
+    counts_changed = _recalculate_evaluation_counts_dict(data)
+    return bool(keys_to_move or counts_changed)
 
 
 def _recategorize_evaluation_tests(eval_path: Path, logger: Any) -> bool:
-    """Recategorize Error tests from prior checkpoints to Regression.
+    """Recategorize Error tests and refresh pass/total counts.
 
     Prior checkpoint tests with error markers should be REGRESSION, not ERROR.
-    This fixes evaluation.json files created before this logic change.
-
-    Supports both formats:
-    - New format: tests is a dict grouped by "checkpoint-GroupType" keys
-    - Old format: tests is a list of individual test objects
+    Pass/total counts are recalculated so skipped tests are excluded from
+    pass-rate denominators.
 
     Args:
         eval_path: Path to the evaluation.json file.
@@ -588,15 +538,8 @@ def _recategorize_evaluation_tests(eval_path: Path, logger: Any) -> bool:
         )
         return False
 
-    # Detect format and process accordingly
     if isinstance(tests, dict):
-        # New format: {"checkpoint_1-Error": {"passed": [...], "failed": [...]}}
         changes_made = _recategorize_evaluation_tests_dict_format(
-            data, checkpoint_name, logger
-        )
-    elif isinstance(tests, list):
-        # Old format: [{"id": "...", "checkpoint": "...", "group_type": "Error", ...}]
-        changes_made = _recategorize_evaluation_tests_list_format(
             data, checkpoint_name, logger
         )
     else:
@@ -638,10 +581,11 @@ def _recategorize_evaluation_tests(eval_path: Path, logger: Any) -> bool:
 def _backfill_evaluation_group_types(
     results_dir: Path, logger: Any
 ) -> tuple[int, int]:
-    """Backfill evaluation.json files to fix Error->Regression categorization.
+    """Backfill evaluation.json group types and pass/total counts.
 
     Prior checkpoint tests with error markers should be REGRESSION, not ERROR.
-    This function finds all evaluation.json files and recategorizes them.
+    This function also recalculates counts so skipped tests are excluded from
+    pass-rate denominators.
 
     Args:
         results_dir: Path to the run directory.

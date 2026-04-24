@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from token import COMMENT
+from token import DEDENT
+from token import ENDMARKER
+from token import INDENT
+from token import NEWLINE
+from token import NL
+from tokenize import TokenError
+from tokenize import generate_tokens
 from typing import TYPE_CHECKING
 
 from slop_code.metrics.languages.python.constants import CLONE_NODE_TYPES
@@ -24,41 +32,59 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
+IGNORED_SLOC_TOKEN_TYPES = {
+    COMMENT,
+    DEDENT,
+    ENDMARKER,
+    INDENT,
+    NEWLINE,
+    NL,
+}
+
+_LITERAL_TOKENS = {
+    "string": "$STR",
+    "string_content": "$STR",
+    "f_string": "$STR",
+    "string_fragment": "$STR",
+    "bytes": "$STR",
+    "integer": "$INT",
+    "float": "$FLOAT",
+    "imaginary": "$FLOAT",
+    "true": "$BOOL",
+    "false": "$BOOL",
+    "none": "$NONE",
+}
+
+
 def _normalize_ast(node: Node) -> str:
     """Create normalized string representation of AST subtree."""
-    var_map: dict[str, str] = {}
-    var_counter = 0
-    literal_tokens = {
-        "string": "$STR",
-        "string_content": "$STR",
-        "f_string": "$STR",
-        "string_fragment": "$STR",
-        "bytes": "$STR",
-        "integer": "$INT",
-        "float": "$FLOAT",
-        "imaginary": "$FLOAT",
-        "true": "$BOOL",
-        "false": "$BOOL",
-        "none": "$NONE",
-    }
+    variable_map: dict[str, str] = {}
+    variable_counter = 0
 
-    def normalize(n: Node) -> str:
-        nonlocal var_counter
-        if n.type == "identifier":
-            name = n.text.decode("utf-8")
-            if name not in var_map:
-                var_counter += 1
-                var_map[name] = f"$VAR{var_counter}"
-            return var_map[name]
+    def normalize(current: Node) -> str:
+        nonlocal variable_counter
+        if current.type == "identifier":
+            if current.text is None:
+                return "$VAR0"
+            name = current.text.decode("utf-8")
+            if name not in variable_map:
+                variable_counter += 1
+                variable_map[name] = f"$VAR{variable_counter}"
+            return variable_map[name]
 
-        if n.type in literal_tokens:
-            return literal_tokens[n.type]
+        if current.type in _LITERAL_TOKENS:
+            return _LITERAL_TOKENS[current.type]
 
-        if not n.named_children:
-            return n.type
+        children = tuple(
+            child
+            for child in current.children
+            if child.type != "comment" and not _is_plain_string_statement(child)
+        )
+        if not children:
+            return current.type
 
-        child_parts = [normalize(child) for child in n.named_children]
-        return f"{n.type}({','.join(child_parts)})"
+        child_parts = [normalize(child) for child in children]
+        return f"{current.type}({','.join(child_parts)})"
 
     return normalize(node)
 
@@ -66,7 +92,89 @@ def _normalize_ast(node: Node) -> str:
 def _hash_ast_subtree(node: Node) -> str:
     """Generate hash of normalized AST subtree."""
     normalized = _normalize_ast(node)
-    return hashlib.md5(normalized.encode()).hexdigest()[:12]
+    return hashlib.md5(
+        normalized.encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
+
+
+def _is_type_checking_block(node: Node) -> bool:
+    condition = node.child_by_field_name("condition")
+    text = condition.text if condition is not None else None
+    return text in {b"TYPE_CHECKING", b"typing.TYPE_CHECKING"}
+
+
+def _is_plain_string_statement(node: Node) -> bool:
+    if node.type == "string":
+        expression = node
+    elif node.type == "expression_statement" and len(node.named_children) == 1:
+        expression = node.named_children[0]
+    else:
+        return False
+
+    if expression.type != "string":
+        return False
+
+    text = expression.text
+    if text is None:
+        return False
+
+    prefix = _string_prefix(text.decode("utf-8"))
+    return "b" not in prefix and "f" not in prefix
+
+
+def _string_prefix(literal: str) -> str:
+    prefix_chars: list[str] = []
+    for character in literal:
+        if character in {'"', "'"}:
+            break
+        prefix_chars.append(character.lower())
+    return "".join(prefix_chars)
+
+
+def _sloc_line_numbers(source: str, root: Node) -> frozenset[int]:
+    source_lines = source.splitlines(keepends=True)
+    text_lines = source.splitlines()
+    lines: set[int] = set()
+    try:
+        for token in generate_tokens(iter(source_lines).__next__):
+            if token.type not in IGNORED_SLOC_TOKEN_TYPES:
+                lines.add(token.start[0])
+    except TokenError:
+        return frozenset(lines)
+
+    for start, end in _plain_string_statement_ranges(root, text_lines):
+        for line_number in range(start, end + 1):
+            lines.discard(line_number)
+    return frozenset(lines)
+
+
+def _plain_string_statement_ranges(
+    root: Node,
+    source_lines: list[str],
+) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if _is_plain_string_statement(node):
+            literal = node if node.type == "string" else node.named_children[0]
+            if _owns_line(literal, source_lines):
+                ranges.append(
+                    (literal.start_point[0] + 1, literal.end_point[0] + 1),
+                )
+        stack.extend(node.named_children)
+    return tuple(ranges)
+
+
+def _owns_line(node: Node, source_lines: list[str]) -> bool:
+    start_row, start_col = node.start_point
+    end_row, end_col = node.end_point
+    start_line = (
+        source_lines[start_row] if start_row < len(source_lines) else ""
+    )
+    end_line = source_lines[end_row] if end_row < len(source_lines) else ""
+    return not start_line[:start_col].strip() and not end_line[end_col:].strip()
 
 
 def detect_code_clones(source: Path, min_lines: int = 3) -> RedundancyMetrics:
@@ -80,16 +188,24 @@ def detect_code_clones(source: Path, min_lines: int = 3) -> RedundancyMetrics:
     parser = get_python_parser()
     tree = parser.parse(code.encode("utf-8"))
     source_lines = code.splitlines()
+    sloc_lines = _sloc_line_numbers(code, tree.root_node)
 
     groups: dict[str, list[tuple[Node, str, int]]] = {}
     stack = [tree.root_node]
 
     while stack:
         current = stack.pop()
-        if current.type in CLONE_NODE_TYPES:
-            line_count = current.end_point[0] - current.start_point[0] + 1
-            if line_count >= min_lines:
+        if current.type in CLONE_NODE_TYPES and not _is_type_checking_block(
+            current
+        ):
+            start_line = current.start_point[0] + 1
+            end_line = current.end_point[0] + 1
+            sloc_count = sum(
+                1 for line in sloc_lines if start_line <= line <= end_line
+            )
+            if sloc_count >= min_lines:
                 ast_hash = _hash_ast_subtree(current)
+                line_count = end_line - start_line + 1
                 groups.setdefault(ast_hash, []).append(
                     (current, current.type, line_count)
                 )
