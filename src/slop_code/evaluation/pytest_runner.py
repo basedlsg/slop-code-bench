@@ -922,7 +922,7 @@ markers =
                     test_result = self._convert_ctrf_test_to_result(ctrf_test)
                     results.add_test_result(test_result)
 
-            counted_total = sum(results.total_counts.values())
+            counted_total = len(results.tests)
             if num_collected > counted_total:
                 missing_count = num_collected - counted_total
                 if not results.infrastructure_failure:

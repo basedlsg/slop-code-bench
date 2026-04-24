@@ -294,6 +294,10 @@ class CorrectnessResults(BaseModel):
     def add_test_result(self, result: TestResult) -> None:
         """Add a test result and update aggregated counts.
 
+        Skipped tests (including xfailed) are recorded in ``tests`` but do not
+        contribute to ``total_counts`` or ``pass_counts``. Pass policies treat
+        them as not-executed rather than as failures.
+
         Args:
             result: TestResult to add
 
@@ -302,12 +306,13 @@ class CorrectnessResults(BaseModel):
         """
         self.tests.append(result)
 
-        # Update total count for this GroupType
+        if result.status == "skipped":
+            return
+
         self.total_counts[result.group_type] = (
             self.total_counts.get(result.group_type, 0) + 1
         )
 
-        # Update pass count if test passed
         if result.status == "passed":
             self.pass_counts[result.group_type] = (
                 self.pass_counts.get(result.group_type, 0) + 1

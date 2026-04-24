@@ -657,7 +657,7 @@ class KimiCliAgent(Agent):
         thinking_flag = self._resolve_thinking_flag()
         if thinking_flag is not None:
             kimi_command_parts.append(thinking_flag)
-        kimi_command_parts.extend(self.extra_args)
+        kimi_command_parts.extend(self._resolved_extra_args())
         kimi_command = " ".join(
             shlex.quote(part) for part in kimi_command_parts
         )
@@ -718,6 +718,20 @@ class KimiCliAgent(Agent):
             return "--thinking"
 
         return None
+
+    def _resolved_extra_args(self) -> list[str]:
+        resolved = list(self.extra_args)
+        if self.cost_limits.step_limit > 0 and not self._has_cli_flag(
+            resolved, "--max-steps-per-turn"
+        ):
+            resolved.extend(
+                ["--max-steps-per-turn", str(self.cost_limits.step_limit)]
+            )
+        return resolved
+
+    @staticmethod
+    def _has_cli_flag(args: list[str], flag: str) -> bool:
+        return any(arg == flag or arg.startswith(f"{flag}=") for arg in args)
 
     def _summarize_wire_steps(
         self, wire_steps: list[_WireStep]

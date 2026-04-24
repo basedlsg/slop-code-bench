@@ -192,6 +192,80 @@ class TestCorrectnessResults:
         assert results.total_counts[GroupType.CORE] == 2
         assert results.pass_counts[GroupType.CORE] == 1  # Still only 1 passed
 
+    def test_skipped_tests_not_counted_in_totals(self):
+        """Skipped tests are recorded but excluded from pass/total counts."""
+        results = CorrectnessResults(
+            problem_name="test",
+            problem_version=1,
+            checkpoint_name="checkpoint_1",
+            checkpoint_version=1,
+            duration=5.0,
+            entrypoint="python main.py",
+            pytest_exit_code=0,
+            pytest_collected=2,
+        )
+
+        results.add_test_result(
+            EvalTestResult(
+                id="test_pass",
+                checkpoint="checkpoint_1",
+                group_type=GroupType.CORE,
+                status="passed",
+                duration_ms=10.0,
+                file_path="tests/test.py",
+            )
+        )
+        results.add_test_result(
+            EvalTestResult(
+                id="test_skip",
+                checkpoint="checkpoint_1",
+                group_type=GroupType.CORE,
+                status="skipped",
+                duration_ms=1.0,
+                file_path="tests/test.py",
+            )
+        )
+
+        assert results.total_counts[GroupType.CORE] == 1
+        assert results.pass_counts[GroupType.CORE] == 1
+        assert len(results.tests) == 2
+
+    def test_passes_policy_core_cases_skipped_not_failed(self):
+        """Skipped CORE tests do not cause core-cases policy to fail."""
+        results = CorrectnessResults(
+            problem_name="test",
+            problem_version=1,
+            checkpoint_name="checkpoint_1",
+            checkpoint_version=1,
+            duration=5.0,
+            entrypoint="python main.py",
+            pytest_exit_code=0,
+            pytest_collected=2,
+        )
+
+        results.add_test_result(
+            EvalTestResult(
+                id="test_pass",
+                checkpoint="checkpoint_1",
+                group_type=GroupType.CORE,
+                status="passed",
+                duration_ms=10.0,
+                file_path="tests/test.py",
+            )
+        )
+        results.add_test_result(
+            EvalTestResult(
+                id="test_skip",
+                checkpoint="checkpoint_1",
+                group_type=GroupType.CORE,
+                status="skipped",
+                duration_ms=1.0,
+                file_path="tests/test.py",
+            )
+        )
+
+        assert results.passes_policy("core-cases")
+
     def test_passes_policy_core_cases_all_pass(self):
         """core-cases policy passes when all CORE tests pass."""
         results = CorrectnessResults(
