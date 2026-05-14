@@ -1,0 +1,19 @@
+internal_name: deepseek-chat-v3-0324
+provider: openrouter
+pricing:
+  input: 0.20
+  output: 0.77
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - deepseek/deepseek-chat-v3-0324
+provider_slugs:
+  openrouter: deepseek/deepseek-chat-v3-0324
+
+agent_specific:
+  mini_swe:
+    model_name: deepseek/deepseek-chat-v3-0324
+    model_class: openrouter
+
+  opencode:
+    provider_name: openrouter

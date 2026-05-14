@@ -1,0 +1,20 @@
+internal_name: llama-3.1-8b-instruct
+provider: openrouter
+pricing:
+  input: 0.02
+  output: 0.05
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - meta-llama/llama-3.1-8b-instruct
+provider_slugs:
+  openrouter: meta-llama/llama-3.1-8b-instruct
+
+agent_specific:
+  mini_swe:
+    model_name: meta-llama/llama-3.1-8b-instruct
+    model_class: openrouter
+
+  opencode:
+    provider_name: openrouter
+

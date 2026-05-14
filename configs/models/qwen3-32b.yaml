@@ -1,0 +1,19 @@
+internal_name: qwen3-32b
+provider: openrouter
+pricing:
+  input: 0.08
+  output: 0.28
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - qwen/qwen3-32b
+provider_slugs:
+  openrouter: qwen/qwen3-32b
+
+agent_specific:
+  mini_swe:
+    model_name: qwen/qwen3-32b
+    model_class: openrouter
+
+  opencode:
+    provider_name: openrouter

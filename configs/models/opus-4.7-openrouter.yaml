@@ -1,0 +1,24 @@
+internal_name: claude-opus-4-7
+provider: openrouter
+pricing:
+  input: 5
+  output: 25
+  cache_read: 0.5
+  cache_write: 6.25
+aliases:
+  - opus-4.7-openrouter
+  - openrouter/opus-4.7
+  - anthropic/claude-opus-4.7
+provider_slugs:
+  openrouter: anthropic/claude-opus-4.7
+
+thinking: high
+
+agent_specific:
+  mini_swe:
+    model_name: anthropic/claude-opus-4.7
+    model_class: openrouter
+
+  opencode:
+    provider_name: openrouter
+
