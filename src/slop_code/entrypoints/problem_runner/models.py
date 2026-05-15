@@ -87,6 +87,7 @@ class RunTaskConfig:
     resume: bool = False
     dry_run: bool = False
     one_shot: OneShotConfig = field(default_factory=OneShotConfig)
+    between_checkpoint_hook: str | None = None
 
 
 class ProblemState(BaseModel):

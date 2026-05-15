@@ -180,6 +180,7 @@ def run_agent_on_problem(
         agent_type=config.agent_config.type,
         agent_version=config.agent_config.version,
         model_name=config.model_def.name,
+        between_checkpoint_hook=config.between_checkpoint_hook,
     )
 
     return runner.run_agent(

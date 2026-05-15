@@ -884,6 +884,7 @@ def _create_task_config(
     live_progress: bool,
     image_name: str,
     resume: bool,
+    between_checkpoint_hook: str | None = None,
 ) -> problem_runner.RunTaskConfig:
     """Create task configuration for problem execution.
 
@@ -925,6 +926,7 @@ def _create_task_config(
         image=image_name,
         resume=resume,
         one_shot=run_cfg.one_shot,
+        between_checkpoint_hook=between_checkpoint_hook,
     )
 
 
@@ -1131,6 +1133,11 @@ def run_agent(
         False,  # noqa: FBT003
         "--dry-run",
         help="Preview what would be done without making changes (use with --resume)",
+    ),
+    between_checkpoint_hook: str | None = typer.Option(
+        None,
+        "--between-checkpoint-hook",
+        help="Path to an executable script to run between checkpoints.",
     ),
     # Config overrides via positional arguments
     overrides: list[str] | None = typer.Argument(
@@ -1409,6 +1416,7 @@ def run_agent(
         live_progress=live_progress,
         image_name=image_name,
         resume=is_resuming,
+        between_checkpoint_hook=between_checkpoint_hook,
     )
 
     # 15. Run problems
