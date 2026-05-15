@@ -1,6 +1,8 @@
 type: opencode
 version: 1.0.134
-      
+timeout: 7200 # seconds; raised from the implicit default so slow-but-progressing
+              # checkpoints (observed ~95 min on dense 70B NVIDIA models) complete
+              # instead of being killed mid-run. Matches codex/cursor_cli/kimi/pi.
 cost_limits:
   cost_limit: 20
   step_limit: 250
