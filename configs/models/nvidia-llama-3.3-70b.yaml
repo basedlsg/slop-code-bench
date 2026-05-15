@@ -1,0 +1,15 @@
+internal_name: nvidia-llama-3.3-70b
+provider: nvidia
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - meta/llama-3.3-70b-instruct
+provider_slugs:
+  nvidia: meta/llama-3.3-70b-instruct
+
+agent_specific:
+  opencode:
+    provider_name: nvidia

@@ -1,0 +1,15 @@
+internal_name: groq-qwen3-32b
+provider: groq
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - qwen/qwen3-32b
+provider_slugs:
+  groq: qwen/qwen3-32b
+
+agent_specific:
+  opencode:
+    provider_name: groq

@@ -140,6 +140,33 @@ providers:
     env_var: KIMI_API_KEY
     description: Kimi API key for direct kimi.com coding endpoint
 
+  groq:
+    type: env_var
+    env_var: GROQ_API_KEY
+    description: Groq free-tier API (OpenAI-compatible); hosts Llama, Qwen, gpt-oss
+    endpoints:
+      openai:
+        api_base: https://api.groq.com/openai/v1
+        api_format: openai
+
+  llama:
+    type: env_var
+    env_var: LLAMA_API_KEY
+    description: Meta Llama Developer API (OpenAI-compatible)
+    endpoints:
+      openai:
+        api_base: https://api.llama.com/v1
+        api_format: openai
+
+  nvidia:
+    type: env_var
+    env_var: NVIDIA_API_KEY
+    description: NVIDIA hosted NIM API (build.nvidia.com), OpenAI-compatible, free tier, multi-vendor
+    endpoints:
+      openai:
+        api_base: https://integrate.api.nvidia.com/v1
+        api_format: openai
+
   # File-based providers
   codex_auth:
     type: file

@@ -1,0 +1,15 @@
+internal_name: groq-llama-3.3-70b
+provider: groq
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - llama-3.3-70b-versatile
+provider_slugs:
+  groq: llama-3.3-70b-versatile
+
+agent_specific:
+  opencode:
+    provider_name: groq

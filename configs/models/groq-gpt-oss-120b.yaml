@@ -1,0 +1,15 @@
+internal_name: groq-gpt-oss-120b
+provider: groq
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - openai/gpt-oss-120b
+provider_slugs:
+  groq: openai/gpt-oss-120b
+
+agent_specific:
+  opencode:
+    provider_name: groq

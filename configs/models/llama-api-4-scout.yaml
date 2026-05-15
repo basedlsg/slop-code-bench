@@ -1,0 +1,15 @@
+internal_name: llama-api-4-scout
+provider: llama
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - Llama-4-Scout-17B-16E-Instruct-FP8
+provider_slugs:
+  llama: Llama-4-Scout-17B-16E-Instruct-FP8
+
+agent_specific:
+  opencode:
+    provider_name: llama

@@ -1,0 +1,15 @@
+internal_name: llama-api-3.3-8b
+provider: llama
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - Llama-3.3-8B-Instruct
+provider_slugs:
+  llama: Llama-3.3-8B-Instruct
+
+agent_specific:
+  opencode:
+    provider_name: llama

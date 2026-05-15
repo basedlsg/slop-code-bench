@@ -1,0 +1,15 @@
+internal_name: nvidia-qwen3-next-80b
+provider: nvidia
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - qwen/qwen3-next-80b-a3b-instruct
+provider_slugs:
+  nvidia: qwen/qwen3-next-80b-a3b-instruct
+
+agent_specific:
+  opencode:
+    provider_name: nvidia

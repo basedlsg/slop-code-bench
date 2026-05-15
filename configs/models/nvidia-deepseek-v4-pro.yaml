@@ -1,0 +1,15 @@
+internal_name: nvidia-deepseek-v4-pro
+provider: nvidia
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - deepseek-ai/deepseek-v4-pro
+provider_slugs:
+  nvidia: deepseek-ai/deepseek-v4-pro
+
+agent_specific:
+  opencode:
+    provider_name: nvidia
