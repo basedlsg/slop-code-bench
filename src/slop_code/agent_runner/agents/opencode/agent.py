@@ -476,6 +476,27 @@ class OpenCodeAgent(Agent):
             message_value = error_payload.get("message")
             if isinstance(message_value, str):
                 error_message = message_value
+            else:
+                # OpenCode wraps provider errors as {"name": ..., "data": {...}}.
+                # The human-readable text lives under error.data.message; surface it
+                # (with the error name and HTTP status) instead of "unknown".
+                data = error_payload.get("data")
+                if isinstance(data, dict):
+                    parts: list[str] = []
+                    name = error_payload.get("name")
+                    if isinstance(name, str):
+                        parts.append(name)
+                    status = data.get("statusCode")
+                    if status is not None:
+                        parts.append(f"HTTP {status}")
+                    data_msg = data.get("message")
+                    if isinstance(data_msg, str):
+                        parts.append(data_msg)
+                    if parts:
+                        error_message = ": ".join(parts)
+                if error_message is None:
+                    # Last resort: serialise the whole payload so nothing is lost.
+                    error_message = json.dumps(error_payload)[:800]
         elif isinstance(error_payload, str):
             error_message = error_payload
 
