@@ -195,3 +195,7 @@ class AgentRunSpec(BaseModel):
         str | None,
         Field(default=None, description="Model name for prompt templates"),
     ] = None
+    between_checkpoint_hook: Annotated[
+        str | None,
+        Field(default=None, description="Path to an executable script to run between checkpoints"),
+    ] = None

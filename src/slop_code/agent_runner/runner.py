@@ -178,6 +178,7 @@ def get_task_for_checkpoint(
     agent_type: str | None = None,
     agent_version: str | None = None,
     model_name: str | None = None,
+    prompt_prefix: str | None = None,
 ) -> str:
     """Generate the task prompt for a specific checkpoint.
 
@@ -203,6 +204,9 @@ def get_task_for_checkpoint(
         checkpoint=checkpoint_name,
         is_first=is_first_checkpoint,
     )
+    if prompt_prefix:
+        spec_text = f"{prompt_prefix}\n\n{spec_text}"
+
     context = {
         "is_continuation": not is_first_checkpoint,
         "agent_type": agent_type,
@@ -414,6 +418,7 @@ def run_checkpoint(
     agent_type: str | None = None,
     agent_version: str | None = None,
     model_name: str | None = None,
+    prompt_prefix: str | None = None,
 ) -> tuple[Path, CheckpointInferenceResult | None, SnapshotDiff]:
     task = get_task_for_checkpoint(
         checkpoint_name=checkpoint.name,
@@ -426,6 +431,7 @@ def run_checkpoint(
         agent_type=agent_type,
         agent_version=agent_version,
         model_name=model_name,
+        prompt_prefix=prompt_prefix,
     )
     snapshot_dir, result, diff = _run_inference(
         checkpoint_name=checkpoint.name,
@@ -712,6 +718,7 @@ class AgentRunner:
         checkpoint: CheckpointConfig,
         checkpoint_save_dir: Path,
         is_first_checkpoint: bool,  # noqa: FBT001
+        prompt_prefix: str | None = None,
     ) -> AgentCheckpointSummary:
         compress = self.run_spec.compress_artifacts
         try:
@@ -731,6 +738,7 @@ class AgentRunner:
                 agent_type=self.run_spec.agent_type,
                 agent_version=self.run_spec.agent_version,
                 model_name=self.run_spec.model_name,
+                prompt_prefix=prompt_prefix,
             )
             if result is not None:
                 reporting.save_agent_checkpoint_info(
@@ -948,6 +956,9 @@ class AgentRunner:
                     checkpoint, checkpoint_save_dir
                 )
                 if existing_summary:
+                    # Persisted hook prefixes aren't needed when skipping a completed checkpoint,
+                    # because the checkpoint's prompt was already rendered and executed.
+                    # We only need the summary.
                     results.append(existing_summary)
                     self.metrics_tracker.current_checkpoint = checkpoint.name
                     self.progress_queue.put(
@@ -966,6 +977,47 @@ class AgentRunner:
                 total=len(self.run_spec.problem.checkpoints),
             )
 
+            prompt_prefix = None
+            if idx > 0 and self.run_spec.between_checkpoint_hook:
+                import os
+                import subprocess
+                hook_path = self.run_spec.between_checkpoint_hook
+                prefix_file = checkpoint_save_dir / "hook_prefix.txt"
+                if isinstance(hook_path, str) and os.path.exists(hook_path) and os.access(hook_path, os.X_OK):
+                    prev_summary = results[-1]
+                    payload = {
+                        "trajectory_id": str(self.output_path.absolute()),
+                        "model_id": self.run_spec.model_name or "",
+                        "problem_id": self.run_spec.problem.name,
+                        "previous_checkpoint_name": prev_summary.checkpoint_name,
+                        "current_checkpoint_name": checkpoint.name,
+                        "previous_checkpoint_output_dir": str(prev_summary.path.absolute()),
+                        "previous_snapshot_dir": str(prev_summary.snapshot_dir.absolute()) if prev_summary.snapshot_dir else "",
+                        "previous_diff_path": str((prev_summary.path / "diff.json").absolute()),
+                        "prior_session_dir": str(self.session.workspace.working_dir.absolute()) if hasattr(self.session, "workspace") and hasattr(self.session.workspace, "working_dir") else ""
+                    }
+                    try:
+                        import json
+                        env = os.environ.copy()
+                        proc = subprocess.run(
+                            [hook_path],
+                            input=json.dumps(payload).encode("utf-8"),
+                            capture_output=True,
+                            env=env,
+                            check=False
+                        )
+                        if proc.stderr:
+                            logger.info(f"Hook stderr: {proc.stderr.decode('utf-8')}")
+                        if proc.returncode == 0 and proc.stdout:
+                            prompt_prefix = proc.stdout.decode("utf-8").strip()
+                            if prompt_prefix:
+                                prefix_file.parent.mkdir(parents=True, exist_ok=True)
+                                prefix_file.write_text(prompt_prefix)
+                            else:
+                                prompt_prefix = None
+                    except Exception as e:
+                        logger.error(f"Failed to run hook: {e}")
+
             self.metrics_tracker.current_checkpoint = checkpoint.name
             self.metrics_tracker.checkpoint_started = datetime.now()
 
@@ -973,6 +1025,7 @@ class AgentRunner:
                 checkpoint,
                 checkpoint_save_dir,
                 idx == 0,
+                prompt_prefix=prompt_prefix,
             )
             results.append(summary)
             self.metrics_tracker.finish_checkpoint(self.agent.usage)
